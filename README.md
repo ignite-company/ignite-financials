@@ -44,3 +44,21 @@ npm run dev
 ```
 
 Do not commit .env files or expose the Supabase service-role key to browser code. 
+
+## Bank Transactions (Plaid)
+
+The app includes a separate **Bank Transactions** page. It supports secure Plaid Link connection, read-only bank transaction imports, manual sync, daily automatic sync, categories, account filters, tag-based spending (such as Girlfriend), and virtual bucket labels.
+
+**Production setup (real banks):**
+
+1. In the Plaid Dashboard, complete your Trial application, if available, and find your **Client ID** and **Production secret** in API Keys.
+2. In **Vercel → ignite-financials → Settings → Environment Variables**, add `PLAID_CLIENT_ID` and `PLAID_SECRET` as **encrypted server-only** values (never `VITE_` prefixes). Select Production for both. The project already has `PLAID_TOKEN_ENCRYPTION_KEY`, `CRON_SECRET`, and `PLAID_ENV` configured.
+3. When ready to use real bank accounts, set `PLAID_ENV` to `production` in Vercel. While set to `sandbox`, only test institutions can be used.
+4. In the Plaid Dashboard, add `https://ignite-financials.vercel.app/` to **Build → API → Allowed Redirect URIs** (the exact callback used for banks requiring OAuth).
+5. Redeploy on Vercel so the server functions receive the new variables. Sign in, open Bank Transactions, and choose **Connect bank**.
+
+**Sandbox testing:** use the Sandbox secret instead of the Production secret and keep `PLAID_ENV=sandbox`. Never use production and sandbox credentials together.
+
+Bank data remains separate from the existing manual payment and expense ledger to prevent accidentally counting the same transaction twice. Imported bank purchases show in the Banking page and can be tagged or assigned to virtual buckets; they do not directly change the accounting profit cards. Bank transactions sync at most daily by Vercel Cron, and you can manually use **Sync now**. Plaid can take time to initially populate history or reflect pending charges. Automatic bank transfers are not enabled.
+
+Never send Plaid API secrets or bank passwords in chat, and do not commit secrets to GitHub.
