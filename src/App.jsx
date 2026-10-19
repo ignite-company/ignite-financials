@@ -83,6 +83,7 @@ export default function App(){
  const [loading,setLoading]=useState(true),[modal,setModal]=useState(""),[edit,setEdit]=useState(null),[form,setForm]=useState({}),[search,setSearch]=useState(""),[notice,setNotice]=useState(""),[saving,setSaving]=useState(false),[sidebar,setSidebar]=useState(false),[bucketEdits,setBucketEdits]=useState({}),[fileInput,setFileInput]=useState(null);
  const fileRef=useRef(null), refreshSeq=useRef(0);
  useEffect(()=>{if(!db){setChecking(false);return;}db.auth.getSession().then(({data})=>{setUser(data.session?.user||null);setChecking(false);});const {data:{subscription}}=db.auth.onAuthStateChange((_event,session)=>{setUser(session?.user||null);});return()=>subscription.unsubscribe();},[]);
+ useEffect(()=>{if(new URLSearchParams(window.location.search).has("oauth_state_id"))setView("banking");},[]);
  const toast=(s)=>{setNotice(s);setTimeout(()=>setNotice(""),4200);};
 
  async function refresh(usr=user){
