@@ -100,7 +100,7 @@ declare
  allocated numeric(14,2);
 begin
  delete from public.finance_allocations where transaction_id=new.id;
- if new.type<>'income' then return new; end if;
+ if new.type<>'income' or new.category='Transfer' then return new; end if;
  select count(*) into eligible_count from public.finance_buckets
    where user_id=new.user_id and scope=new.scope and percentage>0;
  if eligible_count=0 then return new; end if;
@@ -124,5 +124,5 @@ begin
  return new;
 end $$;
 revoke execute on function public.finance_allocate_income() from public,anon,authenticated;
-create trigger finance_income_allocate after insert or update of amount,type,scope
+create trigger finance_income_allocate after insert or update of amount,type,scope,category
 on public.finance_transactions for each row execute function public.finance_allocate_income();
