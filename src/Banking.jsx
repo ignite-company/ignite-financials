@@ -78,36 +78,63 @@ export default function Banking({db,scope,buckets,onNotice}){
  const categoryData=Object.entries(report.filter(t=>t.amount>0&&customCategory(t)!=="Transfers").reduce((map,t)=>{const cat=customCategory(t);map[cat]=(map[cat]||0)+Number(t.amount);return map;},{})).sort((a,b)=>b[1]-a[1]);
  const categories=["All categories",...new Set(transactions.map(customCategory))].sort((a,b)=>a==="All categories"?-1:b==="All categories"?1:a.localeCompare(b));
  const tags=["All tags",...new Set(transactions.flatMap(t=>t.tags||[]))].sort((a,b)=>a==="All tags"?-1:b==="All tags"?1:a.localeCompare(b));
+ const plaidPendingKey="ignite_financials_plaid_link_session";
+ const clearOAuth=()=>{
+  sessionStorage.removeItem(plaidPendingKey);
+  const url=new URL(window.location.href);
+  if(url.searchParams.has("oauth_state_id")){
+   url.searchParams.delete("oauth_state_id");
+   window.history.replaceState({}, "", url.pathname+url.search+url.hash);
+  }
+ };
+ async function launchPlaidLink(token,linkScope,updateId=null,receivedRedirectUri=null){
+  const Plaid=await openPlaidScript();
+  const handler=Plaid.create({
+   token,
+   ...(receivedRedirectUri?{receivedRedirectUri}:{}),
+   onSuccess:async(public_token,metadata)=>{
+    setBusy(true);
+    try{
+     if(!updateId){
+      const institution=metadata?.institution||{};
+      const linked=await api("exchange",{scope:linkScope,public_token,institution_id:institution.institution_id,institution_name:institution.name});
+      onNotice("Bank connected. "+(linked.account_count||0)+" account(s) imported. Transactions can take time to appear.");
+     }else{
+      await api("sync",{scope:linkScope});
+      onNotice("Bank connection refreshed.");
+     }
+     await refresh();
+    }catch(e){onNotice(e.message);}
+    finally{clearOAuth();setBusy(false);handler.destroy?.();}
+   },
+   onExit:(error)=>{
+    clearOAuth();setBusy(false);handler.destroy?.();
+    if(error)onNotice(error.display_message||"Bank connection was cancelled.");
+   }
+  });
+  handler.open();
+ }
  async function connectBank(updateItem=null){
-  if(!data.configured){onNotice("Add PLAID_CLIENT_ID and PLAID_SECRET to this Vercel project first.");return}
+  if(!data.configured){onNotice("Add PLAID_CLIENT_ID and PLAID_SECRET to this Vercel project first.");return;}
   setBusy(true);
   try{
    const ret=await api("link-token",{scope,update_item_id:updateItem?.id});
-   const Plaid=await openPlaidScript();
-   const handler=Plaid.create({
-    token:ret.link_token,
-    onSuccess:async(public_token,metadata)=>{
-     setBusy(true);
-     try{
-      if(!updateItem){
-       const institution=metadata?.institution||{};
-       const linked=await api("exchange",{scope,public_token,institution_id:institution.institution_id,institution_name:institution.name});
-       onNotice("Bank connected. "+(linked.account_count||0)+" account(s) imported. Transactions can take some time to appear.");
-      }else{
-       await api("sync",{scope});onNotice("Bank connection refreshed.");
-      }
-      await refresh();
-     }catch(e){onNotice(e.message);}
-     finally{setBusy(false);handler.destroy?.();}
-    },
-    onExit:(error)=>{
-     setBusy(false);handler.destroy?.();
-     if(error)onNotice(error.display_message||"Bank connection was cancelled.");
-    }
-   });
-   handler.open();
+   sessionStorage.setItem(plaidPendingKey,JSON.stringify({token:ret.link_token,scope,updateId:updateItem?.id||null,createdAt:Date.now()}));
+   await launchPlaidLink(ret.link_token,scope,updateItem?.id||null);
   }catch(e){onNotice(e.message);setBusy(false);}
  }
+ useEffect(()=>{
+  const url=new URL(window.location.href);
+  if(!url.searchParams.has("oauth_state_id"))return;
+  const pending=JSON.parse(sessionStorage.getItem(plaidPendingKey)||"null");
+  if(!pending||Date.now()-pending.createdAt>3*3600000){
+   onNotice("Your bank connection session expired. Start connecting your bank again.");
+   clearOAuth();return;
+  }
+  setBusy(true);
+  launchPlaidLink(pending.token,pending.scope,pending.updateId,url.href)
+   .catch(e=>{onNotice(e.message);clearOAuth();setBusy(false);});
+ },[]);
  async function syncNow(){
   if(!items.length)return;setBusy(true);
   try{
