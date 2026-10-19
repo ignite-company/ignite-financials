@@ -69,26 +69,44 @@ export default function App(){
  const [user,setUser]=useState(null),[checking,setChecking]=useState(true),[view,setView]=useState("overview"),[scope,setScope]=useState("business"),[period,setPeriod]=useState("month");
  const [transactions,setTransactions]=useState([]),[buckets,setBuckets]=useState([]),[allocations,setAllocations]=useState([]),[accounts,setAccounts]=useState([]);
  const [loading,setLoading]=useState(true),[modal,setModal]=useState(""),[edit,setEdit]=useState(null),[form,setForm]=useState({}),[search,setSearch]=useState(""),[notice,setNotice]=useState(""),[saving,setSaving]=useState(false),[sidebar,setSidebar]=useState(false),[bucketEdits,setBucketEdits]=useState({}),[fileInput,setFileInput]=useState(null);
- const fileRef=useRef(null), initRef=useRef(false);
+ const fileRef=useRef(null), refreshSeq=useRef(0);
  useEffect(()=>{if(!db){setChecking(false);return;}db.auth.getSession().then(({data})=>{setUser(data.session?.user||null);setChecking(false);});const {data:{subscription}}=db.auth.onAuthStateChange((_event,session)=>{setUser(session?.user||null);});return()=>subscription.unsubscribe();},[]);
  const toast=(s)=>{setNotice(s);setTimeout(()=>setNotice(""),4200);};
+
  async function refresh(usr=user){
   if(!usr)return;
+  const run=++refreshSeq.current;
   setLoading(true);
-  const [t,b,a,acc]=await Promise.all([db.from("finance_transactions").select("*").order("date",{ascending:false}).limit(5000),db.from("finance_buckets").select("*").order("sort_order"),db.from("finance_allocations").select("*").limit(15000),db.from("finance_accounts").select("*").order("created_at")]);
+  const initialized=await db.rpc("finance_ensure_default_buckets");
+  if(run!==refreshSeq.current)return;
+  if(initialized.error){
+   toast("Could not load allocation rules: "+initialized.error.message);
+   setLoading(false);
+   return;
+  }
+  const [t,b,a,acc]=await Promise.all([
+   db.from("finance_transactions").select("*").order("date",{ascending:false}).limit(5000),
+   db.from("finance_buckets").select("*").order("sort_order"),
+   db.from("finance_allocations").select("*").limit(15000),
+   db.from("finance_accounts").select("*").order("created_at")
+  ]);
+  if(run!==refreshSeq.current)return;
   const err=t.error||b.error||a.error||acc.error;
   if(err){toast("Data could not load: "+err.message);setLoading(false);return;}
-  let bucketList=b.data||[];
-  if(bucketList.length===0 && !initRef.current){
-   initRef.current=true;
-   const starter=Object.entries(defaults).flatMap(([s,arr])=>arr.map(([name,percentage,color],i)=>({user_id:usr.id,scope:s,name,percentage,color,sort_order:i})));
-   let r=await db.from("finance_buckets").insert(starter).select();
-   if(r.error)toast("Bucket setup error: "+r.error.message);
-   else bucketList=r.data||[];
-  }
-  setTransactions(t.data||[]);setBuckets(bucketList);setAllocations(a.data||[]);setAccounts(acc.data||[]);setLoading(false);
+  setTransactions(t.data||[]);
+  setBuckets(b.data||[]);
+  setAllocations(a.data||[]);
+  setAccounts(acc.data||[]);
+  setLoading(false);
  }
- useEffect(()=>{if(user){initRef.current=false;refresh(user);}else {setTransactions([]);setBuckets([]);setAllocations([]);setAccounts([]);setLoading(false);}},[user?.id]);
+ useEffect(()=>{
+  if(user){refresh(user);}
+  else{
+   refreshSeq.current++;
+   setTransactions([]);setBuckets([]);setAllocations([]);setAccounts([]);
+   setLoading(false);
+  }
+ },[user?.id]);
  const tx=useMemo(()=>transactions.filter(t=>t.scope===scope),[transactions,scope]);
  const scopedBuckets=useMemo(()=>buckets.filter(b=>b.scope===scope).sort((a,b)=>a.sort_order-b.sort_order),[buckets,scope]);
  const accountList=useMemo(()=>accounts.filter(a=>a.scope===scope),[accounts,scope]);
@@ -111,9 +129,23 @@ export default function App(){
  }
  async function deleteTxn(t){if(!confirm("Delete this transaction? This also deletes its virtual allocation records."))return;const {error}=await db.from("finance_transactions").delete().eq("id",t.id);if(error)toast(error.message);else {toast("Transaction deleted");refresh();}}
  async function saveAccount(e){e.preventDefault();setSaving(true);const {error}=await db.from("finance_accounts").insert({user_id:user.id,scope,name:form.name.trim(),opening_balance:Number(form.opening_balance||0)});setSaving(false);if(error)toast(error.message);else {setModal("");refresh();toast("Account added");}}
- async function saveBuckets(){if(Math.abs(currentTotal-100)>0.001){toast("Percentages must total exactly 100%.");return;}setSaving(true);
-  for(const b of scopedBuckets){const p=Number(bucketEdits[b.id]??b.percentage);if(p!==Number(b.percentage)){const {error}=await db.from("finance_buckets").update({percentage:p}).eq("id",b.id);if(error){toast(error.message);setSaving(false);return;}}}
-  setSaving(false);setBucketEdits({});toast("Allocation percentages updated for future income.");refresh();
+
+ async function saveBuckets(){
+  if(saving)return;
+  const rules=scopedBuckets.map(b=>({id:b.id,percentage:Number(bucketEdits[b.id]??b.percentage)}));
+  const sum=rules.reduce((n,r)=>n+r.percentage,0);
+  if(rules.some(r=>!Number.isFinite(r.percentage)||r.percentage<0||r.percentage>100)||Math.abs(sum-100)>0.001){
+   toast("Percentages must be valid and total exactly 100%.");return;
+  }
+  setSaving(true);
+  try {
+   const {error}=await db.rpc("finance_save_bucket_rules",{p_scope:scope,p_rules:rules});
+   if(error)throw error;
+   await refresh();
+   setBucketEdits({});
+   toast("Allocation rules saved. Existing allocations are unchanged.");
+  }catch(error){toast("Could not save: "+error.message);}
+  finally{setSaving(false);}
  }
  async function importCSV(e){const f=e.target.files?.[0];if(!f)return;setSaving(true);
    try{const content=await f.text();const rows=parseCSV(content),list=[];
@@ -151,7 +183,7 @@ export default function App(){
      {loading?<div className="content-loading">Loading your financial records...</div>:<>
      {(view==="overview"||view==="reports")&&<div className="filterbar"><div className="segmented">{[["month","This month"],["90","Last 90 days"],["all","All time"]].map(([id,l])=><button key={id} className={period===id?"selected":""} onClick={()=>setPeriod(id)}>{l}</button>)}</div><span className="data-hint"><span className="red-online"/> Manual + CSV records</span></div>}
      {view==="overview"&&<>
-      <div className="stats-grid"><Stat label="Revenue received" value={money(income)} sub={selectedTx.filter(isRevenue).length+" recorded payments"} icon={ArrowDownRight} positive/><Stat label="Total expenses" value={money(expenses)} sub={selectedTx.filter(isOperatingExpense).length+" operating expenses"} icon={ArrowUpRight}/><Stat label="Net profit" value={money(profit)} sub={income?((profit/income)*100).toFixed(1)+"% profit margin":"Revenue minus recorded expenses"} icon={TrendingUp} positive={profit>0} negative={profit<0}/><Stat label="Virtual available" value={money(totalUnspent)} sub="All-time allocations less assigned expenses" icon={Wallet}/></div>
+      <div className="stats-grid"><Stat label="Revenue received" value={money(income)} sub={selectedTx.filter(isRevenue).length+" recorded payments"} icon={ArrowDownRight} positive/><Stat label="Operating expenses" value={money(expenses)} sub={selectedTx.filter(isOperatingExpense).length+" operating expenses"} icon={ArrowUpRight}/><Stat label="Net profit" value={money(profit)} sub={income?((profit/income)*100).toFixed(1)+"% profit margin":"Revenue minus recorded expenses"} icon={TrendingUp} positive={profit>0} negative={profit<0}/><Stat label="Virtual available" value={money(totalUnspent)} sub="All-time allocations less assigned expenses" icon={Wallet}/></div>
       <div className="dashboard-grid"><section className="panel chart-panel"><div className="panel-head"><div><h2>Cash flow</h2><p>Last 6 months</p></div><div className="chart-legend"><i className="legend-red"/>Revenue <i className="legend-dark"/>Expenses</div></div><div className="chart"><div className="chart-lines"><span>{shortMoney(maxTrend)}</span><span>{shortMoney(maxTrend/2)}</span><span>$0</span></div><div className="bars">{trend.map(t=><div className="bar-group" key={t.month}><div className="bar-pair"><div title={"Revenue "+money(t.income)} className="bar revenue-bar" style={{height:Math.max(t.income?3:0,t.income/maxTrend*100)+"%"}}/><div title={"Expenses "+money(t.expense)} className="bar expenses-bar" style={{height:Math.max(t.expense?3:0,t.expense/maxTrend*100)+"%"}}/></div><span>{t.label}</span></div>)}</div></div><div className="chart-summary"><div><span>Revenue, last 6 months</span><strong>{money(trend.reduce((s,t)=>s+t.income,0))}</strong></div><div><span>Expenses, last 6 months</span><strong>{money(trend.reduce((s,t)=>s+t.expense,0))}</strong></div></div></section>
        <section className="panel allocation-panel"><div className="panel-head"><div><h2>Money allocation</h2><p>Live virtual balances</p></div><button className="text-action" onClick={()=>setView("allocations")}>Manage <ArrowUpRight size={15}/></button></div><div className="allocated-total"><span>Assigned from payments</span><strong>{money(totalAllocated)}</strong></div><div className="allocation-strip">{scopedBuckets.map(b=><div key={b.id} style={{background:b.color,width:b.percentage+"%"}} title={b.name+" "+b.percentage+"%"}/>)}</div><div className="bucket-mini-list">{scopedBuckets.map(b=><div className="bucket-mini" key={b.id}><span className="swatch" style={{background:b.color}}/><div><b>{b.name}</b><small>{Number(b.percentage)}% of incoming payments</small></div><strong>{money(bucketBalance(b))}</strong></div>)}</div><div className="virtual-note"><CircleHelp size={16}/>These are tracking balances, not separate bank accounts.</div></section></div>
       <section className="panel recent"><div className="panel-head"><div><h2>Recent activity</h2><p>Your latest money movements</p></div><button className="text-action" onClick={()=>setView("transactions")}>View all <ArrowUpRight size={15}/></button></div>{tx.length?<TransactionTable rows={tx.slice(0,6)} onEdit={t=>openTxn(t.type,t)} onDelete={deleteTxn}/>:<Empty icon={ReceiptText} title="No transactions yet" body="Record your first payment or expense to see your finances come to life." action="Record a payment" onAction={()=>openTxn("income")}/>}</section>
