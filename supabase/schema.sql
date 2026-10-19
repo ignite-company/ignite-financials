@@ -70,7 +70,8 @@ create policy "finance_allocations_read" on public.finance_allocations
  for select to authenticated using((select auth.uid())=user_id);
 
 revoke all on public.finance_accounts,public.finance_buckets,public.finance_transactions,public.finance_allocations from anon,authenticated;
-grant select,insert,update,delete on public.finance_accounts,public.finance_buckets,public.finance_transactions to authenticated;
+grant select,insert,update,delete on public.finance_accounts,public.finance_transactions to authenticated;
+grant select on public.finance_buckets to authenticated;
 grant select on public.finance_allocations to authenticated;
 
 create or replace function public.finance_validate_transaction_refs()
@@ -126,3 +127,57 @@ end $$;
 revoke execute on function public.finance_allocate_income() from public,anon,authenticated;
 create trigger finance_income_allocate after insert or update of amount,type,scope,category
 on public.finance_transactions for each row execute function public.finance_allocate_income();
+
+-- Server-side idempotent initialization. Never seed buckets directly in React.
+create or replace function public.finance_ensure_default_buckets()
+returns void language plpgsql security definer set search_path='' as $$
+declare v_user uuid:=(select auth.uid());
+begin
+ if v_user is null then raise exception 'Authentication required'; end if;
+ perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext(v_user::text),71942);
+ insert into public.finance_buckets(user_id,scope,name,percentage,color,sort_order)
+ select v_user,d.scope,d.name,d.percentage,d.color,d.sort_order from
+ (values
+ ('business','Taxes',25::numeric,'#171717',0),
+ ('business','Operations',25::numeric,'#e53935',1),
+ ('business','Owner pay',35::numeric,'#8b8f9a',2),
+ ('business','Cash reserves',15::numeric,'#d9a441',3),
+ ('personal','Essentials',50::numeric,'#171717',0),
+ ('personal','Lifestyle',25::numeric,'#e53935',1),
+ ('personal','Savings',15::numeric,'#8b8f9a',2),
+ ('personal','Buffer',10::numeric,'#d9a441',3)
+ ) as d(scope,name,percentage,color,sort_order)
+ on conflict(user_id,scope,name) do nothing;
+end $$;
+revoke all on function public.finance_ensure_default_buckets() from public,anon,authenticated;
+grant execute on function public.finance_ensure_default_buckets() to authenticated;
+
+-- Update all percentages atomically and validate complete 100% distribution.
+create or replace function public.finance_save_bucket_rules(p_scope text,p_rules jsonb)
+returns void language plpgsql security definer set search_path='' as $$
+declare
+ v_user uuid:=(select auth.uid());
+ v_count integer;v_unique integer;v_invalid integer;
+ v_expected integer;v_matching integer;v_total numeric;
+begin
+ if v_user is null then raise exception 'Authentication required'; end if;
+ if p_scope not in ('business','personal') then raise exception 'Invalid workspace'; end if;
+ if p_rules is null or jsonb_typeof(p_rules)<>'array' then raise exception 'Invalid allocation payload'; end if;
+ perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext(v_user::text),71942);
+ select count(*),count(distinct r.id),count(*) filter(where r.id is null or r.percentage is null or r.percentage<0 or r.percentage>100),coalesce(sum(r.percentage),0)
+ into v_count,v_unique,v_invalid,v_total
+ from jsonb_to_recordset(p_rules) as r(id uuid,percentage numeric);
+ if v_count=0 or v_unique<>v_count or v_invalid>0 or v_total<>100
+ then raise exception 'Every bucket must have a valid unique ID and percentages must total exactly 100';end if;
+ select count(*) into v_expected from public.finance_buckets where user_id=v_user and scope=p_scope;
+ select count(*) into v_matching from public.finance_buckets b
+ join jsonb_to_recordset(p_rules) as r(id uuid,percentage numeric) on r.id=b.id
+ where b.user_id=v_user and b.scope=p_scope;
+ if v_matching<>v_count or v_expected<>v_count
+ then raise exception 'Allocation rules do not match all your current buckets. Reload and try again';end if;
+ update public.finance_buckets b set percentage=r.percentage
+ from jsonb_to_recordset(p_rules) as r(id uuid,percentage numeric)
+ where b.id=r.id and b.user_id=v_user and b.scope=p_scope;
+end $$;
+revoke all on function public.finance_save_bucket_rules(text,jsonb) from public,anon,authenticated;
+grant execute on function public.finance_save_bucket_rules(text,jsonb) to authenticated;
