@@ -2,13 +2,31 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { LayoutDashboard, ArrowLeftRight, Wallet, ChartNoAxesCombined, Settings2, Plus, Search, Upload, LogOut, ChevronDown, X, ArrowUpRight, ArrowDownRight, CreditCard, ShieldCheck, Landmark, Pencil, Trash2, Check, CircleHelp, TrendingUp, ReceiptText, Menu, Download, LockKeyhole, CalendarDays, AlertCircle } from "lucide-react";
 
-const db = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY);
+const ready = Boolean(import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY);
+const db = ready ? createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY) : null;
 const money = (n) => new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:2}).format(Number(n)||0);
 const shortMoney = (n) => new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",notation:"compact",maximumFractionDigits:1}).format(Number(n)||0);
 const dstr = () => { const d=new Date(); return [d.getFullYear(),String(d.getMonth()+1).padStart(2,"0"),String(d.getDate()).padStart(2,"0")].join("-"); };
 const defaults = {
   business:[["Taxes",25,"#171717"],["Operations",25,"#e53935"],["Owner pay",35,"#8b8f9a"],["Cash reserves",15,"#d9a441"]],
   personal:[["Essentials",50,"#171717"],["Lifestyle",25,"#e53935"],["Savings",15,"#8b8f9a"],["Buffer",10,"#d9a441"]]
+};
+const suggestedCategory = (description,type) => {
+ const v=(description||"").toLowerCase();
+ if(type==="income")return "Client payment";
+ const rules=[
+  ["Advertising",/meta ads|facebook ads|google ads|adwords|tiktok ads|instagram ads|advertis|marketing/],
+  ["Software",/vercel|supabase|github|openai|chatgpt|anthropic|claude|instantly|smartlead|apollo|ghl|gohighlevel|leadconnector|retell|cal\.com|zoom|notion|software|subscription|stripe fee/],
+  ["Contractors",/subcontract|freelancer|upwork|fiverr|contractor/],
+  ["Rent",/landlord|apartment rent|rent payment|lease/],
+  ["Utilities",/at&t|verizon|t-mobile|optimum|electric|internet|utility|comcast/],
+  ["Transportation",/uber|lyft|shell|exxon|bp gas|fuel|parking|toll/],
+  ["Meals",/starbucks|doordash|ubereats|restaurant|mcdonald|dunkin/],
+  ["Insurance",/insurance|geico|progressive/],
+  ["Taxes",/irs|tax payment|treasury/],
+  ["Equipment",/best buy|apple store|hardware|laptop/],
+ ];
+ return rules.find(([,rx])=>rx.test(v))?.[0]||"Other";
 };
 const cats = {expense:["Advertising","Software","Contractors","Payroll","Rent","Utilities","Transportation","Meals","Insurance","Taxes","Equipment","Office","Personal","Other"],income:["Client payment","Retainer","Project revenue","Other income"]};
 const tabs = [{id:"overview",name:"Overview",icon:LayoutDashboard},{id:"transactions",name:"Transactions",icon:ArrowLeftRight},{id:"income",name:"Payments & revenue",icon:Wallet},{id:"allocations",name:"Allocations",icon:Landmark},{id:"reports",name:"Reports",icon:ChartNoAxesCombined},{id:"settings",name:"Settings",icon:Settings2}];
@@ -37,7 +55,7 @@ export default function App(){
  const [transactions,setTransactions]=useState([]),[buckets,setBuckets]=useState([]),[allocations,setAllocations]=useState([]),[accounts,setAccounts]=useState([]);
  const [loading,setLoading]=useState(true),[modal,setModal]=useState(""),[edit,setEdit]=useState(null),[form,setForm]=useState({}),[search,setSearch]=useState(""),[notice,setNotice]=useState(""),[saving,setSaving]=useState(false),[sidebar,setSidebar]=useState(false),[bucketEdits,setBucketEdits]=useState({}),[fileInput,setFileInput]=useState(null);
  const fileRef=useRef(null), initRef=useRef(false);
- useEffect(()=>{db.auth.getSession().then(({data})=>{setUser(data.session?.user||null);setChecking(false);});const {data:{subscription}}=db.auth.onAuthStateChange((_event,session)=>{setUser(session?.user||null);});return()=>subscription.unsubscribe();},[]);
+ useEffect(()=>{if(!db){setChecking(false);return;}db.auth.getSession().then(({data})=>{setUser(data.session?.user||null);setChecking(false);});const {data:{subscription}}=db.auth.onAuthStateChange((_event,session)=>{setUser(session?.user||null);});return()=>subscription.unsubscribe();},[]);
  const toast=(s)=>{setNotice(s);setTimeout(()=>setNotice(""),4200);};
  async function refresh(usr=user){
   if(!usr)return;
@@ -69,7 +87,7 @@ export default function App(){
  const trend=useMemo(()=>Array.from({length:6},(_,i)=>{const d=new Date();d.setDate(1);d.setMonth(d.getMonth()-5+i);const m=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");const row=tx.filter(t=>t.date.startsWith(m));return {label:d.toLocaleDateString("en-US",{month:"short"}),month:m,income:row.filter(t=>t.type==="income").reduce((s,t)=>s+Number(t.amount),0),expense:row.filter(t=>t.type==="expense").reduce((s,t)=>s+Number(t.amount),0)};}),[tx]);
  const maxTrend=Math.max(1,...trend.map(t=>Math.max(t.income,t.expense)));
  const currentTotal=scopedBuckets.reduce((s,b)=>s+Number(bucketEdits[b.id]??b.percentage),0);
- const openTxn=(type="expense",t=null)=>{setEdit(t);setForm(t?{...t}:{type,scope,date:dstr(),description:"",amount:"",category:type==="income"?"Client payment":"Software",payer:"",project:"",notes:"",account_id:"",bucket_id:""});setModal("transaction");};
+ const openTxn=(type="expense",t=null)=>{setEdit(t);setForm(t?{...t}:{type,scope,date:dstr(),description:"",amount:"",category:type==="income"?"Client payment":"Other",payer:"",project:"",notes:"",account_id:"",bucket_id:""});setModal("transaction");};
  async function saveTxn(e){e.preventDefault();setSaving(true);
   const value={user_id:user.id,scope:form.scope||scope,type:form.type,date:form.date,description:(form.description||"").trim(),amount:Number(form.amount),category:form.category||"Other",payer:form.type==="income"?(form.payer||"").trim()||null:null,project:form.type==="income"?(form.project||"").trim()||null:null,notes:form.notes||null,account_id:form.account_id||null,bucket_id:form.type==="expense"?(form.bucket_id||null):null,source:edit?.source||"manual"};
   if(!value.description||!(value.amount>0)){toast("Enter a description and positive amount.");setSaving(false);return;}
@@ -92,7 +110,7 @@ export default function App(){
       else val=Number((r.credit||"").replace(/[$,]/g,""))-Number((r.debit||"").replace(/[$,]/g,""));
       if(!date||!description||!Number.isFinite(val)||val===0)continue;
       const type=val>0?"income":"expense",amount=Math.abs(val);
-      list.push({user_id:user.id,scope,date,description,amount,type,category:type==="income"?"Other income":"Other",source:"csv",fingerprint:scope+"|"+date+"|"+description.toLowerCase()+"|"+amount.toFixed(2)+"|"+type});
+      list.push({user_id:user.id,scope,date,description,amount,type,category:type==="income"?"Other income":suggestedCategory(description,type),source:"csv",fingerprint:scope+"|"+date+"|"+description.toLowerCase()+"|"+amount.toFixed(2)+"|"+type});
     }
     if(!list.length){toast("No valid rows. Include Date, Description, Amount.");setSaving(false);e.target.value="";return;}
     const {error}=await db.from("finance_transactions").upsert(list,{onConflict:"user_id,fingerprint",ignoreDuplicates:true});
@@ -100,6 +118,7 @@ export default function App(){
    }catch(err){toast("Import failed: "+err.message);}finally{setSaving(false);e.target.value="";}
  }
  function exportCSV(){const columns=["date","scope","type","description","amount","category","payer","project","notes"];const lines=[columns.join(","),...tx.map(t=>columns.map(k=>'"'+String(t[k]??"").replaceAll('"','""')+'"').join(","))];const blob=new Blob([lines.join("\n")],{type:"text/csv"});const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="ignite-financials-"+scope+"-"+dstr()+".csv";a.click();URL.revokeObjectURL(url);}
+ if(!ready)return <div className="config-screen"><div className="login-mark">I<span>.</span></div><h1>Connect Ignite Financials</h1><p>Vercel needs the Supabase environment variables to activate secure sign-in.</p><div className="config-keys"><code>VITE_SUPABASE_URL</code><code>VITE_SUPABASE_ANON_KEY</code></div><small>Set these in Vercel → Project → Settings → Environment Variables, then redeploy. Never add a service-role key.</small></div>;
  if(checking)return <div className="loading-screen">IGNITE <span>FINANCIALS</span></div>;
  if(!user)return <Login onError={toast}/>;
  const pageTitle=tabs.find(t=>t.id===view)?.name;
@@ -133,7 +152,7 @@ export default function App(){
    </div></main>
    {notice&&<div className="toast"><CircleHelp size={16}/>{notice}<button onClick={()=>setNotice("")}><X size={15}/></button></div>}
    {modal&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setModal("");}}><div className="modal-card"><div className="modal-heading"><div><div className="eyebrow">IGNITE FINANCIALS</div><h2>{modal==="transaction"?(edit?"Edit transaction":form.type==="income"?"Record a payment":"New expense"):modal==="account"?"Add an account label":"Import transactions"}</h2></div><button className="icon-btn" onClick={()=>setModal("")}><X size={21}/></button></div>
-    {modal==="transaction"&&<form className="modal-form" onSubmit={saveTxn}><div className="type-tabs">{[["income","Money in",ArrowDownRight],["expense","Money out",ArrowUpRight]].map(([id,label,Icon])=><button key={id} type="button" className={form.type===id?"active":""} onClick={()=>setForm(v=>({...v,type:id,category:id==="income"?"Client payment":"Software"}))}><Icon size={17}/>{label}</button>)}</div><div className="field"><label>Amount received / spent</label><div className="amount-input"><span>$</span><input type="number" min=".01" step=".01" placeholder="0.00" autoFocus value={form.amount??""} onChange={e=>setForm(v=>({...v,amount:e.target.value}))} required/></div></div><div className="field"><label>Description</label><input placeholder={form.type==="income"?"e.g. Website development deposit":"e.g. Meta Ads"} required value={form.description||""} onChange={e=>setForm(v=>({...v,description:e.target.value}))}/></div><div className="form-row"><div className="field"><label>Date</label><input type="date" value={form.date||dstr()} onChange={e=>setForm(v=>({...v,date:e.target.value}))} required/></div><div className="field"><label>Category</label><select value={form.category||"Other"} onChange={e=>setForm(v=>({...v,category:e.target.value}))}>{[...new Set([...(cats[form.type]||[]),form.category||"Other"])].map(c=><option key={c}>{c}</option>)}</select></div></div>
+    {modal==="transaction"&&<form className="modal-form" onSubmit={saveTxn}><div className="type-tabs">{[["income","Money in",ArrowDownRight],["expense","Money out",ArrowUpRight]].map(([id,label,Icon])=><button key={id} type="button" className={form.type===id?"active":""} onClick={()=>setForm(v=>({...v,type:id,category:id==="income"?"Client payment":"Other"}))}><Icon size={17}/>{label}</button>)}</div><div className="field"><label>Amount received / spent</label><div className="amount-input"><span>$</span><input type="number" min=".01" step=".01" placeholder="0.00" autoFocus value={form.amount??""} onChange={e=>setForm(v=>({...v,amount:e.target.value}))} required/></div></div><div className="field"><label>Description</label><input placeholder={form.type==="income"?"e.g. Website development deposit":"e.g. Meta Ads"} required value={form.description||""} onChange={e=>setForm(v=>({...v,description:e.target.value,category:v.type==="expense"&&(v.category==="Other"||v.category===suggestedCategory(v.description,"expense"))?suggestedCategory(e.target.value,"expense"):v.category}))}/></div><div className="form-row"><div className="field"><label>Date</label><input type="date" value={form.date||dstr()} onChange={e=>setForm(v=>({...v,date:e.target.value}))} required/></div><div className="field"><label>Category</label><select value={form.category||"Other"} onChange={e=>setForm(v=>({...v,category:e.target.value}))}>{[...new Set([...(cats[form.type]||[]),form.category||"Other"])].map(c=><option key={c}>{c}</option>)}</select></div></div>
     {form.type==="income"&&<div className="form-row"><div className="field"><label>Client / payer</label><input placeholder="Client or company" value={form.payer||""} onChange={e=>setForm(v=>({...v,payer:e.target.value}))}/></div><div className="field"><label>Project / service</label><input placeholder="Project name" value={form.project||""} onChange={e=>setForm(v=>({...v,project:e.target.value}))}/></div></div>}
     <div className="form-row"><div className="field"><label>Account label (optional)</label><select value={form.account_id||""} onChange={e=>setForm(v=>({...v,account_id:e.target.value}))}><option value="">Not assigned</option>{accounts.filter(a=>a.scope===(form.scope||scope)).map(a=><option value={a.id} key={a.id}>{a.name}</option>)}</select></div>{form.type==="expense"&&<div className="field"><label>Spend from bucket</label><select value={form.bucket_id||""} onChange={e=>setForm(v=>({...v,bucket_id:e.target.value}))}><option value="">Unallocated expense</option>{buckets.filter(b=>b.scope===(form.scope||scope)).map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</select></div>}</div><div className="field"><label>Notes (optional)</label><textarea rows="2" placeholder="Additional details..." value={form.notes||""} onChange={e=>setForm(v=>({...v,notes:e.target.value}))}/></div><div className="modal-footer"><button className="button" type="button" onClick={()=>setModal("")}>Cancel</button><button className="primary" type="submit" disabled={saving}>{saving?"Saving...":edit?"Save changes":form.type==="income"?"Save payment":"Save expense"}<Check size={16}/></button></div></form>}
     {modal==="account"&&<form className="modal-form" onSubmit={saveAccount}><div className="field"><label>Account name</label><input placeholder="e.g. Business checking" required value={form.name||""} onChange={e=>setForm(v=>({...v,name:e.target.value}))}/></div><div className="field"><label>Opening balance (optional)</label><input type="number" step=".01" value={form.opening_balance||""} onChange={e=>setForm(v=>({...v,opening_balance:e.target.value}))}/></div><div className="modal-footer"><button className="button" type="button" onClick={()=>setModal("")}>Cancel</button><button className="primary" type="submit" disabled={saving}>Add account</button></div></form>}
