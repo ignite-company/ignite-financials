@@ -30,6 +30,7 @@ export default async function handler(req,res){
     if(error||!item)return res.status(404).json({error:"Bank connection not found."});
     payload={user:{client_user_id:user.id},client_name:"Ignite Financials",access_token:decryptAccess(item.access_token_ciphertext),country_codes:["US"],language:"en"};
    }
+   if(process.env.PLAID_ENV==="production")payload.redirect_uri=process.env.PLAID_REDIRECT_URI||"https://ignite-financials.vercel.app/";
    const data=await plaid("link/token/create",payload);
    return res.json({link_token:data.link_token,mode:body.update_item_id?"update":"connect"});
   }
