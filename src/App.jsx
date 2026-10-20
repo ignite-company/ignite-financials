@@ -79,7 +79,7 @@ function Empty({icon:Icon,title,body,action,onAction}){return <div className="em
 
 export default function App(){
  const [user,setUser]=useState(null),[checking,setChecking]=useState(true),[view,setView]=useState("overview"),[scope,setScope]=useState("business"),[period,setPeriod]=useState("month");
- const [transactions,setTransactions]=useState([]),[buckets,setBuckets]=useState([]),[allocations,setAllocations]=useState([]),[accounts,setAccounts]=useState([]);
+ const [transactions,setTransactions]=useState([]),[buckets,setBuckets]=useState([]),[allocations,setAllocations]=useState([]),[accounts,setAccounts]=useState([]),[bankHistory,setBankHistory]=useState([]);
  const [loading,setLoading]=useState(true),[modal,setModal]=useState(""),[edit,setEdit]=useState(null),[form,setForm]=useState({}),[search,setSearch]=useState(""),[notice,setNotice]=useState(""),[saving,setSaving]=useState(false),[sidebar,setSidebar]=useState(false),[bucketEdits,setBucketEdits]=useState({}),[fileInput,setFileInput]=useState(null);
  const fileRef=useRef(null), refreshSeq=useRef(0);
  useEffect(()=>{if(!db){setChecking(false);return;}db.auth.getSession().then(({data})=>{setUser(data.session?.user||null);setChecking(false);});const {data:{subscription}}=db.auth.onAuthStateChange((_event,session)=>{setUser(session?.user||null);});return()=>subscription.unsubscribe();},[]);
