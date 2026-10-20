@@ -93,20 +93,44 @@ export async function syncItem(db,item){
   for(let i=0;i<group.length;i+=150){
    const payload=group.slice(i,i+150).filter(t=>t.transaction_id&&t.date).map(t=>cleanBankTransaction(t,item));
    if(!payload.length)continue;
-   // Preserve custom user classification on every Plaid refresh, including modified transactions.
+   // Preserve category, tags, exclusions and bucket when Plaid edits a transaction.
+   // A posted purchase gets a new ID; pending_transaction_id points to the old pending item.
+   const source=group.slice(i,i+150).filter(t=>t.transaction_id&&t.date);
    const ids=payload.map(t=>t.plaid_transaction_id);
+   const pendingIds=[...new Set(source.filter(t=>!t.pending&&t.pending_transaction_id).map(t=>t.pending_transaction_id))];
+   const userColumns="plaid_transaction_id,category_override,spend_category_id,exclude_from_spending,tags,bucket_id";
    const {data:existing,error:lookupError}=await db.from("finance_bank_transactions")
-    .select("plaid_transaction_id,category_override,tags,bucket_id")
-    .eq("user_id",item.user_id).in("plaid_transaction_id",ids);
+    .select(userColumns).eq("user_id",item.user_id).in("plaid_transaction_id",ids);
    if(lookupError)throw lookupError;
+   let pendingSources=[];
+   if(pendingIds.length){
+    const {data,error:pendingError}=await db.from("finance_bank_transactions")
+     .select(userColumns).eq("user_id",item.user_id).in("plaid_transaction_id",pendingIds);
+    if(pendingError)throw pendingError;
+    pendingSources=data||[];
+   }
    const saved=new Map((existing||[]).map(t=>[t.plaid_transaction_id,t]));
-   const withUserEdits=payload.map(t=>{
-    const prior=saved.get(t.plaid_transaction_id);
+   const savedPending=new Map(pendingSources.map(t=>[t.plaid_transaction_id,t]));
+   const withUserEdits=payload.map((t,index)=>{
+    const fresh=source[index];
+    const prior=saved.get(t.plaid_transaction_id)||
+     (fresh?.pending_transaction_id?savedPending.get(fresh.pending_transaction_id):null);
     if(!prior)return t;
-    return {...t,category_override:prior.category_override,tags:prior.tags||[],bucket_id:prior.bucket_id};
+    return {...t,category_override:prior.category_override,
+     spend_category_id:prior.spend_category_id,
+     exclude_from_spending:!!prior.exclude_from_spending,
+     tags:prior.tags||[],bucket_id:prior.bucket_id};
    });
    const {error}=await db.from("finance_bank_transactions").upsert(withUserEdits,{onConflict:"plaid_transaction_id"});
    if(error)throw error;
+   // Do not count the pending copy again once the posted replacement arrives.
+   if(pendingIds.length){
+    const {error:removePendingError}=await db.from("finance_bank_transactions")
+     .update({is_removed:true,updated_at:new Date().toISOString()})
+     .eq("user_id",item.user_id).eq("bank_item_id",item.id)
+     .in("plaid_transaction_id",pendingIds);
+    if(removePendingError)throw removePendingError;
+   }
   }
  }
  for(let i=0;i<removed.length;i+=200){
