@@ -173,3 +173,17 @@ nav{padding:0 12px;display:flex;flex-direction:column;gap:4px}.nav-link{backgrou
 .ignite-login-mark{width:56px;height:56px;margin-bottom:34px}
 .auth-brand .ignite-mark{width:42px;height:42px}
 .sidebar .ignite-mark{width:42px;height:42px}
+
+
+/* Money-in classification and bank-credit breakdown */
+.spend-income-grid{grid-template-columns:repeat(5,minmax(0,1fr))}
+.spend-income-grid .spend-category-card>span{white-space:normal;line-height:1.35}
+.bank-inflow-overview{padding-bottom:19px}
+.bank-inflow-mini-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;padding:0 22px 19px}
+.bank-inflow-mini{background:#fafbfc;border:1px solid #edf0f2;border-radius:11px;padding:14px;min-width:0}
+.bank-inflow-mini>span{font-weight:700;font-size:10px;color:#79818d;display:block;line-height:1.3}
+.bank-inflow-mini>strong{font-size:21px;letter-spacing:-.6px;color:#222a35;display:block;margin:10px 0 6px;overflow-wrap:anywhere}
+.bank-inflow-mini>small{font-size:10px;color:#a2a9b3}
+.bank-inflow-overview .virtual-note{margin:0 22px}
+@media(max-width:1150px){.spend-income-grid,.bank-inflow-mini-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:650px){.spend-income-grid,.bank-inflow-mini-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.bank-inflow-mini-grid{gap:9px;padding:0 13px 15px}.bank-inflow-mini{padding:12px}.bank-inflow-mini>strong{font-size:19px}.bank-inflow-overview .virtual-note{margin:0 13px}}
