@@ -97,19 +97,30 @@ export default function App(){
    setLoading(false);
    return;
   }
-  const [t,b,a,acc]=await Promise.all([
+  const [t,b,a,acc,bankFirst]=await Promise.all([
    db.from("finance_transactions").select("*").order("date",{ascending:false}).limit(5000),
    db.from("finance_buckets").select("*").order("sort_order"),
    db.from("finance_allocations").select("*").limit(15000),
-   db.from("finance_accounts").select("*").order("created_at")
+   db.from("finance_accounts").select("*").order("created_at"),
+   db.from("finance_bank_transactions").select("id,scope,amount,date,bucket_id,pending,is_removed,exclude_from_spending,category_primary").order("date",{ascending:false}).range(0,999)
   ]);
   if(run!==refreshSeq.current)return;
-  const err=t.error||b.error||a.error||acc.error;
+  const err=t.error||b.error||a.error||acc.error||bankFirst.error;
   if(err){toast("Data could not load: "+err.message);setLoading(false);return;}
   setTransactions(t.data||[]);
   setBuckets(b.data||[]);
   setAllocations(a.data||[]);
   setAccounts(acc.data||[]);
+  const bankRows=[...(bankFirst.data||[])];
+  if(bankRows.length===1000){
+   for(let offset=1000;offset<6000;offset+=1000){
+    const next=await db.from("finance_bank_transactions").select("id,scope,amount,date,bucket_id,pending,is_removed,exclude_from_spending,category_primary").order("date",{ascending:false}).range(offset,offset+999);
+    if(next.error){toast("Some bank activity could not load.");break;}
+    bankRows.push(...next.data);
+    if(next.data.length<1000)break;
+   }
+  }
+  if(run===refreshSeq.current)setBankHistory(bankRows);
   setLoading(false);
  }
  useEffect(()=>{
