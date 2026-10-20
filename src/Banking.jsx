@@ -1,4 +1,5 @@
 import React, {useEffect,useMemo,useRef,useState} from "react";
+import { summarizeSpending } from "./spendingMath.js";
 import {ArrowDownLeft,ArrowUpRight,Building2,Check,ChevronLeft,ChevronRight,CircleHelp,FolderPlus,Landmark,Link2Off,LockKeyhole,MoreHorizontal,Pencil,Plus,ReceiptText,RefreshCw,Search,Settings2,Tag,Trash2,X} from "lucide-react";
 
 const money=n=>new Intl.NumberFormat("en-US",{style:"currency",currency:"USD"}).format(Number(n)||0);
@@ -47,32 +48,10 @@ export default function Banking({db,scope,buckets,onNotice}){
  const categoryById=useMemo(()=>new Map(categories.map(c=>[c.id,c])),[categories]);
  const accountByPlaidId=useMemo(()=>new Map(accounts.map(a=>[a.plaid_account_id,a])),[accounts]);
  const monthAccountTransactions=useMemo(()=>transactions.filter(t=>t.date?.startsWith(month)&&(account==="all"||t.plaid_account_id===account)),[transactions,month,account]);
- // Category totals describe what the user assigned. Spending totals separately respect exclusions.
- // This keeps the card accurate even when a loan payment, transfer, or duplicate is excluded.
- const purchases=useMemo(()=>monthAccountTransactions.filter(t=>Number(t.amount)>0),[monthAccountTransactions]);
- const spending=useMemo(()=>purchases.filter(t=>!t.exclude_from_spending),[purchases]);
- const pendingSpending=spending.filter(t=>t.pending);
- const pendingTotal=pendingSpending.reduce((sum,t)=>sum+Number(t.amount),0);
- const spendingTotal=spending.reduce((n,t)=>n+Number(t.amount),0);
- const postedTotal=spendingTotal-pendingTotal;
- const excludedPurchases=purchases.filter(t=>t.exclude_from_spending);
- const excludedTotal=excludedPurchases.reduce((sum,t)=>sum+Number(t.amount),0);
- const unassigned=purchases.filter(t=>!t.spend_category_id||!categoryById.has(t.spend_category_id));
- const categoryCards=categories.map(c=>{
-  const assigned=purchases.filter(t=>t.spend_category_id===c.id);
-  return {id:c.id,name:c.name,
-   total:assigned.reduce((sum,t)=>sum+Number(t.amount),0),
-   count:assigned.length,
-   excludedCount:assigned.filter(t=>t.exclude_from_spending).length,
-   pendingCount:assigned.filter(t=>t.pending).length};
- }).sort((a,b)=>b.total-a.total||a.name.localeCompare(b.name));
- const uncategorized={
-  id:"uncategorized",name:"Uncategorized",
-  total:unassigned.reduce((sum,t)=>sum+Number(t.amount),0),
-  count:unassigned.length,
-  excludedCount:unassigned.filter(t=>t.exclude_from_spending).length,
-  pendingCount:unassigned.filter(t=>t.pending).length
- };
+ const {
+  purchases,spending,pendingSpending,pendingTotal,spendingTotal,postedTotal,
+  excludedPurchases,excludedTotal,unassigned,categoryCards,uncategorized
+ }=summarizeSpending(monthAccountTransactions,categories);
  const displayed=monthAccountTransactions.filter(t=>{
   if(kind==="spending"&&Number(t.amount)<=0)return false;
   if(kind==="income"&&Number(t.amount)>=0)return false;
