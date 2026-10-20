@@ -131,6 +131,21 @@ export default function App(){
    setLoading(false);
   }
  },[user?.id]);
+ useEffect(()=>{
+  if(!user||view!=="overview")return;
+  let live=true;
+  (async()=>{
+   const rows=[];
+   for(let offset=0;offset<6000;offset+=1000){
+    const result=await db.from("finance_bank_transactions").select("id,scope,amount,date,bucket_id,pending,is_removed,exclude_from_spending,category_primary").order("date",{ascending:false}).range(offset,offset+999);
+    if(result.error)break;
+    rows.push(...result.data);
+    if(result.data.length<1000)break;
+   }
+   if(live)setBankHistory(rows);
+  })();
+  return()=>{live=false};
+ },[user?.id,view,scope]);
  const tx=useMemo(()=>transactions.filter(t=>t.scope===scope),[transactions,scope]);
  const scopedBuckets=useMemo(()=>buckets.filter(b=>b.scope===scope).sort((a,b)=>a.sort_order-b.sort_order),[buckets,scope]);
  const accountList=useMemo(()=>accounts.filter(a=>a.scope===scope),[accounts,scope]);
