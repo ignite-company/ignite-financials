@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 const IGNITE_LOGO = "https://assets.cdn.filesafe.space/bF1dT8IAVuvat84LkAVe/media/6a03b7c8f90b5bc73b099791.png";
 import Banking from "./Banking.jsx";
+import { summarizeInflows } from "./inflowMath.js";
 import { LayoutDashboard, ArrowLeftRight, Wallet, ChartNoAxesCombined, Settings2, Plus, Search, Upload, LogOut, ChevronDown, X, ArrowUpRight, ArrowDownRight, CreditCard, ShieldCheck, Landmark, Pencil, Trash2, Check, CircleHelp, TrendingUp, ReceiptText, Menu, Download, LockKeyhole, CalendarDays, AlertCircle } from "lucide-react";
 
 const ready = Boolean(import.meta.env.VITE_SUPABASE_URL && import.meta.env.VITE_SUPABASE_ANON_KEY);
@@ -103,7 +104,7 @@ export default function App(){
    db.from("finance_buckets").select("*").order("sort_order"),
    db.from("finance_allocations").select("*").limit(15000),
    db.from("finance_accounts").select("*").order("created_at"),
-   db.from("finance_bank_transactions").select("id,scope,amount,date,bucket_id,pending,is_removed,exclude_from_spending,category_primary").order("date",{ascending:false}).range(0,999)
+   db.from("finance_bank_transactions").select("id,scope,amount,date,bucket_id,pending,is_removed,exclude_from_spending,category_primary,inflow_type").order("date",{ascending:false}).range(0,999)
   ]);
   if(run!==refreshSeq.current)return;
   const err=t.error||b.error||a.error||acc.error||bankFirst.error;
@@ -115,7 +116,7 @@ export default function App(){
   const bankRows=[...(bankFirst.data||[])];
   if(bankRows.length===1000){
    for(let offset=1000;offset<6000;offset+=1000){
-    const next=await db.from("finance_bank_transactions").select("id,scope,amount,date,bucket_id,pending,is_removed,exclude_from_spending,category_primary").order("date",{ascending:false}).range(offset,offset+999);
+    const next=await db.from("finance_bank_transactions").select("id,scope,amount,date,bucket_id,pending,is_removed,exclude_from_spending,category_primary,inflow_type").order("date",{ascending:false}).range(offset,offset+999);
     if(next.error){toast("Some bank activity could not load.");break;}
     bankRows.push(...next.data);
     if(next.data.length<1000)break;
@@ -138,7 +139,7 @@ export default function App(){
   (async()=>{
    const rows=[];
    for(let offset=0;offset<6000;offset+=1000){
-    const result=await db.from("finance_bank_transactions").select("id,scope,amount,date,bucket_id,pending,is_removed,exclude_from_spending,category_primary").order("date",{ascending:false}).range(offset,offset+999);
+    const result=await db.from("finance_bank_transactions").select("id,scope,amount,date,bucket_id,pending,is_removed,exclude_from_spending,category_primary,inflow_type").order("date",{ascending:false}).range(offset,offset+999);
     if(result.error)break;
     rows.push(...result.data);
     if(result.data.length<1000)break;
@@ -160,7 +161,8 @@ export default function App(){
  const totalUnspent=scopedBuckets.reduce((s,b)=>s+bucketBalance(b),0);
  const selectedIncomeIds=new Set(selectedTx.filter(isRevenue).map(t=>t.id));
  const allocatedInPeriod=allocations.filter(a=>selectedIncomeIds.has(a.transaction_id)).reduce((n,a)=>n+Number(a.amount),0);
- const bankCredits=activeBankTx.filter(t=>Number(t.amount)<0&&!String(t.category_primary||"").toUpperCase().includes("TRANSFER")&&(period==="all"||period==="month"&&t.date.startsWith(dstr().slice(0,7))||period==="90"&&new Date(t.date+"T12:00:00")>=new Date(Date.now()-90*86400000))).reduce((s,t)=>s+Math.abs(Number(t.amount)),0);
+ const overviewInflows=summarizeInflows(activeBankTx.filter(t=>period==="all"||period==="month"&&t.date.startsWith(dstr().slice(0,7))||period==="90"&&new Date(t.date+"T12:00:00")>=new Date(Date.now()-90*86400000)));
+ const bankCredits=overviewInflows.total;
  const trend=useMemo(()=>Array.from({length:6},(_,i)=>{const d=new Date();d.setDate(1);d.setMonth(d.getMonth()-5+i);const m=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");const row=tx.filter(t=>t.date.startsWith(m));return {label:d.toLocaleDateString("en-US",{month:"short"}),month:m,income:row.filter(isRevenue).reduce((s,t)=>s+Number(t.amount),0),expense:row.filter(isOperatingExpense).reduce((s,t)=>s+Number(t.amount),0)};}),[tx]);
  const maxTrend=Math.max(1,...trend.map(t=>Math.max(t.income,t.expense)));
  const currentTotal=scopedBuckets.reduce((s,b)=>s+Number(bucketEdits[b.id]??b.percentage),0);
@@ -241,6 +243,11 @@ export default function App(){
       <div className="stats-grid"><Stat label="Recorded income" value={money(income)} sub="Payments recorded in this period" icon={ArrowDownRight} positive/><Stat label="Bank credits" value={money(bankCredits)} sub="Incoming activity, not yet verified as revenue" icon={Wallet}/><Stat label="Allocated this period" value={money(allocatedInPeriod)} sub="Reserved from recorded income" icon={Landmark}/><Stat label="Virtual available" value={money(totalUnspent)} sub="After assigned ledger and bank spending" icon={TrendingUp}/></div>
       <div className="dashboard-grid"><section className="panel chart-panel"><div className="panel-head"><div><h2>Money coming in</h2><p>Recorded payments, last 6 months</p></div></div><div className="chart"><div className="chart-lines"><span>{shortMoney(Math.max(1,...trend.map(t=>t.income)))}</span><span>{shortMoney(Math.max(1,...trend.map(t=>t.income))/2)}</span><span>$0</span></div><div className="bars">{trend.map(t=><div key={t.month} className="bar-group"><div className="bar-pair"><div className="bar revenue-bar" title={"Payments "+money(t.income)} style={{height:Math.max(t.income?3:0,t.income/Math.max(1,...trend.map(x=>x.income))*100)+"%"}}/></div><span>{t.label}</span></div>)}</div></div><div className="chart-summary"><div><span>Received, last 6 months</span><strong>{money(trend.reduce((n,t)=>n+t.income,0))}</strong></div><div><span>Payments this month</span><strong>{payments.filter(t=>t.date.startsWith(dstr().slice(0,7))).length}</strong></div></div></section>
        <section className="panel allocation-panel"><div className="panel-head"><div><h2>Money allocation</h2><p>Live virtual balances</p></div><button className="text-action" onClick={()=>setView("allocations")}>Manage <ArrowUpRight size={15}/></button></div><div className="allocated-total"><span>Assigned from payments</span><strong>{money(totalAllocated)}</strong></div><div className="allocation-strip">{scopedBuckets.map(b=><div key={b.id} style={{background:b.color,width:b.percentage+"%"}} title={b.name+" "+b.percentage+"%"}/>)}</div><div className="bucket-mini-list">{scopedBuckets.map(b=><div className="bucket-mini" key={b.id}><span className="swatch" style={{background:b.color}}/><div><b>{b.name}</b><small>{Number(b.percentage)}% of incoming payments</small></div><strong>{money(bucketBalance(b))}</strong></div>)}</div><div className="virtual-note"><CircleHelp size={16}/>These are virtual balances. Bank purchases assigned to a bucket reduce its balance. Do not enter the same expense twice.</div></section></div>
+      <section className="panel bank-inflow-overview">
+       <div className="panel-head"><div><h2>Incoming bank credits</h2><p>Posted deposits you've classified, separate from manually recorded payments</p></div><button className="text-action" onClick={()=>setView("banking")}>Classify in Bank Transactions <ArrowUpRight size={15}/></button></div>
+       <div className="bank-inflow-mini-grid">{overviewInflows.groups.map(g=><div className="bank-inflow-mini" key={g.id}><span>{g.label}</span><strong>{money(g.total)}</strong><small>{g.count} transaction{g.count===1?"":"s"}</small></div>)}</div>
+       <div className="virtual-note"><CircleHelp size={16}/>Business Revenue and Personal Income are identified bank deposits, not extra recorded ledger income. Transfers and refunds are kept separate. Record or reconcile income before allocating it.</div>
+      </section>
       <section className="panel recent"><div className="panel-head"><div><h2>Payments recorded</h2><p>These are the payments that create virtual allocations</p></div><button className="text-action" onClick={()=>setView("income")}>All payments <ArrowUpRight size={15}/></button></div>{payments.length?<TransactionTable rows={payments.slice(0,6)} onEdit={t=>openTxn(t.type,t)} onDelete={deleteTxn}/>:<Empty icon={ReceiptText} title="No payments recorded yet" body="Record a received payment to split it virtually. Bank credits are listed separately until you identify actual revenue." action="Record payment" onAction={()=>openTxn("income")}/>}</section>
      <p className="overview-clarity">Bank credits are not automatically added to recorded revenue, since they can include transfers or refunds. Spending lives under Bank Transactions; bucket allocations are virtual only.</p>
      </>}
