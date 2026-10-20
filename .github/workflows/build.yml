@@ -18,6 +18,8 @@ jobs:
           node-version: '22'
       - name: Install dependencies
         run: npm install --no-audit --no-fund
+      - name: Test spending totals
+        run: npm test
       - name: Compile dashboard
         run: npm run build
         env:
