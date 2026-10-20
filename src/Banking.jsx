@@ -47,17 +47,32 @@ export default function Banking({db,scope,buckets,onNotice}){
  const categoryById=useMemo(()=>new Map(categories.map(c=>[c.id,c])),[categories]);
  const accountByPlaidId=useMemo(()=>new Map(accounts.map(a=>[a.plaid_account_id,a])),[accounts]);
  const monthAccountTransactions=useMemo(()=>transactions.filter(t=>t.date?.startsWith(month)&&(account==="all"||t.plaid_account_id===account)),[transactions,month,account]);
- const spending=useMemo(()=>monthAccountTransactions.filter(t=>Number(t.amount)>0&&!t.exclude_from_spending),[monthAccountTransactions]);
+ // Category totals describe what the user assigned. Spending totals separately respect exclusions.
+ // This keeps the card accurate even when a loan payment, transfer, or duplicate is excluded.
+ const purchases=useMemo(()=>monthAccountTransactions.filter(t=>Number(t.amount)>0),[monthAccountTransactions]);
+ const spending=useMemo(()=>purchases.filter(t=>!t.exclude_from_spending),[purchases]);
  const pendingSpending=spending.filter(t=>t.pending);
  const pendingTotal=pendingSpending.reduce((sum,t)=>sum+Number(t.amount),0);
  const spendingTotal=spending.reduce((n,t)=>n+Number(t.amount),0);
  const postedTotal=spendingTotal-pendingTotal;
- const unassigned=spending.filter(t=>!t.spend_category_id||!categoryById.has(t.spend_category_id));
+ const excludedPurchases=purchases.filter(t=>t.exclude_from_spending);
+ const excludedTotal=excludedPurchases.reduce((sum,t)=>sum+Number(t.amount),0);
+ const unassigned=purchases.filter(t=>!t.spend_category_id||!categoryById.has(t.spend_category_id));
  const categoryCards=categories.map(c=>{
-  const purchases=spending.filter(t=>t.spend_category_id===c.id);
-  return {id:c.id,name:c.name,total:purchases.reduce((sum,t)=>sum+Number(t.amount),0),count:purchases.length,pendingCount:purchases.filter(t=>t.pending).length};
+  const assigned=purchases.filter(t=>t.spend_category_id===c.id);
+  return {id:c.id,name:c.name,
+   total:assigned.reduce((sum,t)=>sum+Number(t.amount),0),
+   count:assigned.length,
+   excludedCount:assigned.filter(t=>t.exclude_from_spending).length,
+   pendingCount:assigned.filter(t=>t.pending).length};
  }).sort((a,b)=>b.total-a.total||a.name.localeCompare(b.name));
- const uncategorized={id:"uncategorized",name:"Uncategorized",total:unassigned.reduce((n,t)=>n+Number(t.amount),0),count:unassigned.length,pendingCount:unassigned.filter(t=>t.pending).length};
+ const uncategorized={
+  id:"uncategorized",name:"Uncategorized",
+  total:unassigned.reduce((sum,t)=>sum+Number(t.amount),0),
+  count:unassigned.length,
+  excludedCount:unassigned.filter(t=>t.exclude_from_spending).length,
+  pendingCount:unassigned.filter(t=>t.pending).length
+ };
  const displayed=monthAccountTransactions.filter(t=>{
   if(kind==="spending"&&Number(t.amount)<=0)return false;
   if(kind==="income"&&Number(t.amount)>=0)return false;
@@ -195,17 +210,17 @@ export default function Banking({db,scope,buckets,onNotice}){
    </div>
   </div>
   <div className="spend-headline">
-   <div><span>THIS MONTH'S SPENDING</span><strong>{money(spendingTotal)}</strong><p>{money(postedTotal)} posted{pendingSpending.length?" + "+money(pendingTotal)+" pending":""} · Includes pending purchases</p></div>
-   <div className="spend-headline-side"><span>{spending.length} purchases</span><span>{unassigned.length} uncategorized</span>{pendingSpending.length>0&&<span>{pendingSpending.length} pending</span>}</div>
+   <div><span>THIS MONTH'S SPENDING</span><strong>{money(spendingTotal)}</strong><p>{money(postedTotal)} posted{pendingSpending.length?" + "+money(pendingTotal)+" pending":""}{excludedPurchases.length?" · "+money(excludedTotal)+" excluded":""}</p></div>
+   <div className="spend-headline-side"><span>{spending.length} included purchases</span><span>{unassigned.length} uncategorized</span>{excludedPurchases.length>0&&<span>{excludedPurchases.length} excluded</span>}</div>
   </div>
-  <div className="spend-categories-head"><div><h2>Your categories</h2><p>Each category shows its monthly total. Click to filter purchases.</p></div><button onClick={()=>setCategoryPanel(true)}><Plus size={15}/> Manage</button></div>
+  <div className="spend-categories-head"><div><h2>Your categories</h2><p>Every purchase you've assigned counts here, including pending and excluded purchases.</p></div><button onClick={()=>setCategoryPanel(true)}><Plus size={15}/> Manage</button></div>
   <div className="spend-category-grid">
    {categoryCards.map((c,i)=><button key={c.id} className={"spend-category-card "+(categoryFilter===c.id?"selected":"")} onClick={()=>{setKind("spending");setCategoryFilter(x=>x===c.id?"all":c.id);}}>
      <span><span className="spend-category-dot" style={{background:["#e53935","#1e2635","#7c8595","#b58d4b","#ac5b65","#637e76"][i%6]}}/>{c.name}</span>
-     <strong>{money(c.total)}</strong><small>{c.count} purchase{c.count===1?"":"s"}{c.pendingCount>0?" · "+c.pendingCount+" pending":""}</small>
+     <strong>{money(c.total)}</strong><small>{c.count} purchase{c.count===1?"":"s"}{c.pendingCount>0?" · "+c.pendingCount+" pending":""}{c.excludedCount>0?" · "+c.excludedCount+" excluded":""}</small>
    </button>)}
    <button className={"spend-category-card "+(categoryFilter==="uncategorized"?"selected":"")} onClick={()=>{setKind("spending");setCategoryFilter(x=>x==="uncategorized"?"all":"uncategorized");}}>
-    <span><span className="spend-category-dot muted"/>Uncategorized</span><strong>{money(uncategorized.total)}</strong><small>{uncategorized.count} to organize{uncategorized.pendingCount>0?" · "+uncategorized.pendingCount+" pending":""}</small>
+    <span><span className="spend-category-dot muted"/>Uncategorized</span><strong>{money(uncategorized.total)}</strong><small>{uncategorized.count} to organize{uncategorized.pendingCount>0?" · "+uncategorized.pendingCount+" pending":""}{uncategorized.excludedCount>0?" · "+uncategorized.excludedCount+" excluded":""}</small>
    </button>
    {categories.length===0&&<button className="spend-new-category-card" onClick={()=>setCategoryPanel(true)}><FolderPlus size={22}/><strong>Create your first category</strong><small>Choose whatever names make sense to you.</small></button>}
   </div>
@@ -227,6 +242,7 @@ export default function Banking({db,scope,buckets,onNotice}){
    </tbody></table></div>
    {loading?<div className="spend-empty">Loading your transactions…</div>:displayed.length===0?<div className="spend-empty"><ReceiptText size={27}/><strong>No transactions for this view</strong><p>{allDates?"Try another month, category, or account.":"Connect a bank to start tracking your purchases automatically."}</p></div>:null}
   </section>
+  <p className="spend-math-note">Category cards show all categorized purchases. The monthly spending total excludes items you've marked as transfers or duplicates. Use the three-dot menu on a transaction to change its exclusion.</p>
   <div className="spend-connected-bar">
    <span><LockKeyhole size={14}/>{accountsLabel} · Read-only · No money moves</span>
    {items.length>0&&<button onClick={()=>setCategoryPanel("banks")}><Landmark size={15}/> Manage banks</button>}
