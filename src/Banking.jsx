@@ -21,7 +21,7 @@ const safeArray=value=>Array.isArray(value)?value:[];
 export default function Banking({db,scope,buckets,onNotice}){
  const [state,setState]=useState({items:[],accounts:[],categories:[],transactions:[],configured:false,environment:"production"});
  const [loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[month,setMonth]=useState(currentMonth()),[account,setAccount]=useState("all"),[search,setSearch]=useState(""),[kind,setKind]=useState("spending"),[categoryFilter,setCategoryFilter]=useState("all");
- const [categoryPanel,setCategoryPanel]=useState(false),[newCategory,setNewCategory]=useState(""),[editingId,setEditingId]=useState(null),[editingName,setEditingName]=useState(""),[details,setDetails]=useState(null),[tagsDraft,setTagsDraft]=useState(""),[bucketDraft,setBucketDraft]=useState(""),[savingId,setSavingId]=useState(null);
+ const [categoryPanel,setCategoryPanel]=useState(false),[newCategory,setNewCategory]=useState(""),[editingId,setEditingId]=useState(null),[editingName,setEditingName]=useState(""),[details,setDetails]=useState(null),[tagsDraft,setTagsDraft]=useState(""),[bucketDraft,setBucketDraft]=useState(""),[savingId,setSavingId]=useState(null),[lastSavedId,setLastSavedId]=useState(null);
  const inflight=useRef(0);
  const api=async(action,payload={})=>{
   const {data:{session}}=await db.auth.getSession();
@@ -111,11 +111,14 @@ export default function Banking({db,scope,buckets,onNotice}){
  }
  async function assign(t,id){
   setSavingId(t.id);
+  setLastSavedId(null);
   const previousId=t.spend_category_id||null;
   setState(v=>({...v,transactions:v.transactions.map(row=>row.id===t.id?{...row,spend_category_id:id||null}:row)}));
   try{
-   await api("transaction-category",{transaction_id:t.id,category_id:id||null});
+   const result=await api("transaction-category",{transaction_id:t.id,category_id:id||null});
+   if(result.transaction?.spend_category_id!==(id||null))throw new Error("The bank transaction did not confirm the category.");
    await load(true);
+   setLastSavedId(t.id);
   }catch(e){
    setState(v=>({...v,transactions:v.transactions.map(row=>row.id===t.id?{...row,spend_category_id:previousId}:row)}));
    onNotice("Couldn't save category: "+e.message);
@@ -234,7 +237,7 @@ export default function Banking({db,scope,buckets,onNotice}){
     {displayed.map(t=><tr key={t.id} className={t.pending?"pending-row":""}>
      <td><div className="spend-merchant"><div className={"spend-sign "+(t.amount<0?"incoming":"")} >{t.amount<0?<ArrowDownLeft size={16}/>:<ArrowUpRight size={16}/>}</div><div><strong>{t.merchant_name||t.description}</strong><small>{t.pending?"Pending • ":""}{t.exclude_from_spending?"Excluded • ":""}{safeArray(t.tags).join(", ")|| (t.merchant_name?t.description:"Transaction")}</small></div></div></td>
      <td>{day(t.date)}</td>
-     <td>{t.amount>0?<select className="spend-assign" aria-label={"Category for "+t.description} value={categoryById.has(t.spend_category_id)?t.spend_category_id:""} disabled={savingId!==null} onChange={e=>assign(t,e.target.value)}><option value="">Uncategorized</option>{categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>:<span className="spend-deposit-label">Deposit</span>}</td>
+     <td>{t.amount>0?<><select className="spend-assign" aria-label={"Category for "+t.description} value={categoryById.has(t.spend_category_id)?t.spend_category_id:""} disabled={savingId!==null} onChange={e=>assign(t,e.target.value)}><option value="">Uncategorized</option>{categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>{savingId===t.id?<small className="spend-save-status">Saving…</small>:lastSavedId===t.id?<small className="spend-save-status confirmed"><Check size={12}/> Saved</small>:null}</>:<span className="spend-deposit-label">Deposit</span>}</td>
      <td className="spend-account-cell">{accountByPlaidId.get(t.plaid_account_id)?.name||"Bank account"}</td>
      <td className={"right spend-money "+(t.amount<0?"credit":"")}>{t.amount<0?"+":"−"}{money(Math.abs(t.amount))}</td>
      <td><button aria-label={"Edit "+t.description} className="spend-more" onClick={()=>openDetails(t)}><MoreHorizontal size={18}/></button></td>
