@@ -98,7 +98,7 @@ export async function syncItem(db,item){
    const source=group.slice(i,i+150).filter(t=>t.transaction_id&&t.date);
    const ids=payload.map(t=>t.plaid_transaction_id);
    const pendingIds=[...new Set(source.filter(t=>!t.pending&&t.pending_transaction_id).map(t=>t.pending_transaction_id))];
-   const userColumns="plaid_transaction_id,category_override,spend_category_id,exclude_from_spending,tags,bucket_id";
+   const userColumns="plaid_transaction_id,category_override,spend_category_id,inflow_type,exclude_from_spending,tags,bucket_id";
    const {data:existing,error:lookupError}=await db.from("finance_bank_transactions")
     .select(userColumns).eq("user_id",item.user_id).in("plaid_transaction_id",ids);
    if(lookupError)throw lookupError;
@@ -118,6 +118,7 @@ export async function syncItem(db,item){
     if(!prior)return t;
     return {...t,category_override:prior.category_override,
      spend_category_id:prior.spend_category_id,
+     inflow_type:prior.inflow_type,
      exclude_from_spending:!!prior.exclude_from_spending,
      tags:prior.tags||[],bucket_id:prior.bucket_id};
    });
