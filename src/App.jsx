@@ -138,11 +138,13 @@ export default function App(){
  const income=selectedTx.filter(isRevenue).reduce((n,t)=>n+Number(t.amount),0),expenses=selectedTx.filter(isOperatingExpense).reduce((n,t)=>n+Number(t.amount),0);
  const profit=income-expenses;
  const payments=tx.filter(isRevenue);
- const bucketBalance=(b)=>allocations.filter(a=>a.bucket_id===b.id).reduce((s,a)=>s+Number(a.amount),0)-tx.filter(t=>t.type==="expense"&&t.category!=="Transfer"&&t.bucket_id===b.id).reduce((s,t)=>s+Number(t.amount),0);
+ const activeBankTx=bankHistory.filter(t=>t.scope===scope&&!t.pending&&!t.is_removed);
+ const bucketBalance=(b)=>allocations.filter(a=>a.bucket_id===b.id).reduce((s,a)=>s+Number(a.amount),0)-tx.filter(t=>t.type==="expense"&&t.category!=="Transfer"&&t.bucket_id===b.id).reduce((s,t)=>s+Number(t.amount),0)-activeBankTx.filter(t=>t.bucket_id===b.id&&Number(t.amount)>0&&!t.exclude_from_spending).reduce((s,t)=>s+Number(t.amount),0);
  const totalAllocated=scopedBuckets.reduce((s,b)=>s+allocations.filter(a=>a.bucket_id===b.id).reduce((n,a)=>n+Number(a.amount),0),0);
  const totalUnspent=scopedBuckets.reduce((s,b)=>s+bucketBalance(b),0);
  const selectedIncomeIds=new Set(selectedTx.filter(isRevenue).map(t=>t.id));
  const allocatedInPeriod=allocations.filter(a=>selectedIncomeIds.has(a.transaction_id)).reduce((n,a)=>n+Number(a.amount),0);
+ const bankCredits=activeBankTx.filter(t=>Number(t.amount)<0&&!String(t.category_primary||"").toUpperCase().includes("TRANSFER")&&(period==="all"||period==="month"&&t.date.startsWith(dstr().slice(0,7))||period==="90"&&new Date(t.date+"T12:00:00")>=new Date(Date.now()-90*86400000))).reduce((s,t)=>s+Math.abs(Number(t.amount)),0);
  const trend=useMemo(()=>Array.from({length:6},(_,i)=>{const d=new Date();d.setDate(1);d.setMonth(d.getMonth()-5+i);const m=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");const row=tx.filter(t=>t.date.startsWith(m));return {label:d.toLocaleDateString("en-US",{month:"short"}),month:m,income:row.filter(isRevenue).reduce((s,t)=>s+Number(t.amount),0),expense:row.filter(isOperatingExpense).reduce((s,t)=>s+Number(t.amount),0)};}),[tx]);
  const maxTrend=Math.max(1,...trend.map(t=>Math.max(t.income,t.expense)));
  const currentTotal=scopedBuckets.reduce((s,b)=>s+Number(bucketEdits[b.id]??b.percentage),0);
