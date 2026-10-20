@@ -100,9 +100,13 @@ export default async function handler(req,res){
      if(ce)throw ce;
      if(!c)return res.status(400).json({error:"Create or select a category in this workspace."});
     }
-    const {error:writeError}=await db.from("finance_bank_transactions").update({spend_category_id:categoryId,updated_at:new Date().toISOString()}).eq("id",t.id).eq("user_id",user.id);
+    const {data:saved,error:writeError}=await db.from("finance_bank_transactions")
+     .update({spend_category_id:categoryId,updated_at:new Date().toISOString()})
+     .eq("id",t.id).eq("user_id",user.id)
+     .select("id,spend_category_id,pending,exclude_from_spending").single();
     if(writeError)throw writeError;
-    return res.json({saved:true});
+    if(saved.spend_category_id!==categoryId)throw new Error("Category could not be confirmed.");
+    return res.json({saved:true,transaction:saved});
    }
    if(typeof body.exclude!=="boolean")return res.status(400).json({error:"Invalid transaction setting."});
    const {error:writeError}=await db.from("finance_bank_transactions").update({exclude_from_spending:body.exclude,updated_at:new Date().toISOString()}).eq("id",t.id).eq("user_id",user.id);
