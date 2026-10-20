@@ -1,213 +1,242 @@
-import React,{useEffect,useMemo,useRef,useState} from "react";
-import {Building2,Plus,RefreshCw,Landmark,ReceiptText,ArrowDownRight,ArrowUpRight,Search,SlidersHorizontal,X,Tag,ShieldCheck,LockKeyhole,AlertCircle,Check,CalendarDays,Link2Off,Wallet,ChevronDown} from "lucide-react";
+import React, {useEffect,useMemo,useRef,useState} from "react";
+import {ArrowDownLeft,ArrowUpRight,Building2,Check,ChevronLeft,ChevronRight,CircleHelp,FolderPlus,Landmark,Link2Off,LockKeyhole,MoreHorizontal,Pencil,Plus,ReceiptText,RefreshCw,Search,Settings2,Tag,Trash2,X} from "lucide-react";
 
-const usd=n=>new Intl.NumberFormat("en-US",{style:"currency",currency:"USD"}).format(Number(n)||0);
-const moneyDate=s=>{const d=new Date(s+"T12:00:00");return Number.isNaN(+d)?s:d.toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"})};
-const options=["Takeout","Groceries","Restaurants","Coffee","Shopping","Subscriptions","Transport","Housing","Utilities","Insurance","Healthcare","Entertainment","Gifts","Personal","Business","Income","Transfers","Fees","Other"];
-const customCategory=t=>{
- if(t.category_override)return t.category_override;
- const primary=(t.category_primary||"").toUpperCase(),detail=(t.category_detailed||"").toUpperCase(),merchant=(t.merchant_name||t.description||"").toLowerCase();
- if(/doordash|uber eats|ubereats|grubhub|postmates|seamless|delivery\.com/.test(merchant))return "Takeout";
- if(primary.includes("FOOD")||detail.includes("FOOD")) {
-  if(/COFFEE|CAFE/.test(detail))return "Coffee";
-  if(/GROCER/.test(detail))return "Groceries";
-  if(/FAST_FOOD|TAKEOUT|FOOD_DELIVERY/.test(detail))return "Takeout";
-  return "Restaurants";
- }
- if(primary.includes("INCOME")||t.amount<0)return "Income";
- if(primary.includes("TRANSFER")||detail.includes("TRANSFER"))return "Transfers";
- if(primary.includes("GROCER"))return "Groceries";
- if(primary.includes("SHOP"))return "Shopping";
- if(primary.includes("TRANSPORT")||primary.includes("TRAVEL"))return "Transport";
- if(primary.includes("RENT")||primary.includes("HOME"))return "Housing";
- if(primary.includes("LOAN"))return "Personal";
- if(primary.includes("ENTERTAINMENT")||primary.includes("RECREATION"))return "Entertainment";
- if(primary.includes("SERVICE")||primary.includes("SUBSCRIPTION"))return "Subscriptions";
- if(primary.includes("HEALTH"))return "Healthcare";
- if(primary.includes("BANK_FEES"))return "Fees";
- return "Other";
-};
-async function openPlaidScript(){
+const money=n=>new Intl.NumberFormat("en-US",{style:"currency",currency:"USD"}).format(Number(n)||0);
+const day=s=>new Date(s+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric"});
+const currentMonth=()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")};
+const formatMonth=s=>new Date(s+"-01T12:00:00").toLocaleDateString("en-US",{month:"long",year:"numeric"});
+const shiftMonth=(s,n)=>{const [y,m]=s.split("-").map(Number),d=new Date(y,m-1+n,1);return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")};
+async function openPlaid(){
  if(window.Plaid)return window.Plaid;
  await new Promise((resolve,reject)=>{
-  const s=document.createElement("script");s.src="https://cdn.plaid.com/link/v2/stable/link-initialize.js";s.async=true;
-  s.onload=resolve;s.onerror=()=>reject(new Error("Could not load secure Plaid bank login."));document.head.appendChild(s);
+  const el=document.createElement("script");el.src="https://cdn.plaid.com/link/v2/stable/link-initialize.js";el.async=true;
+  el.onload=resolve;el.onerror=()=>reject(new Error("Could not load Plaid bank login."));
+  document.head.appendChild(el);
  });
- if(!window.Plaid)throw new Error("Plaid Link did not initialize.");
+ if(!window.Plaid)throw new Error("Plaid did not initialize.");
  return window.Plaid;
 }
+const safeArray=value=>Array.isArray(value)?value:[];
+
 export default function Banking({db,scope,buckets,onNotice}){
- const [data,setData]=useState({items:[],accounts:[],transactions:[],configured:false,environment:"sandbox"});
- const [loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[modal,setModal]=useState(null),[search,setSearch]=useState(""),[period,setPeriod]=useState("month"),[filter,setFilter]=useState("All categories"),[account,setAccount]=useState("all"),[tagFilter,setTagFilter]=useState("All tags"),[form,setForm]=useState({category:"",tags:"",bucket_id:""});
- const scopeRef=useRef(scope),inflight=useRef(0);
- useEffect(()=>{scopeRef.current=scope;setAccount("all");setFilter("All categories");setTagFilter("All tags");setPeriod("month");},[scope]);
+ const [state,setState]=useState({items:[],accounts:[],categories:[],transactions:[],configured:false,environment:"production"});
+ const [loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[month,setMonth]=useState(currentMonth()),[account,setAccount]=useState("all"),[search,setSearch]=useState(""),[kind,setKind]=useState("spending"),[categoryFilter,setCategoryFilter]=useState("all");
+ const [categoryPanel,setCategoryPanel]=useState(false),[newCategory,setNewCategory]=useState(""),[editingId,setEditingId]=useState(null),[editingName,setEditingName]=useState(""),[details,setDetails]=useState(null),[tagsDraft,setTagsDraft]=useState(""),[bucketDraft,setBucketDraft]=useState(""),[savingId,setSavingId]=useState(null);
+ const inflight=useRef(0);
  const api=async(action,payload={})=>{
   const {data:{session}}=await db.auth.getSession();
-  if(!session?.access_token)throw new Error("Your session expired. Please sign in again.");
-  const r=await fetch("/api/plaid",{method:"POST",headers:{"Content-Type":"application/json","Authorization":"Bearer "+session.access_token},body:JSON.stringify({action,...payload}),cache:"no-store"});
-  const body=await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error(body.error||"Banking request failed.");
-  return body;
+  if(!session?.access_token)throw new Error("Please sign in again.");
+  const res=await fetch("/api/plaid",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+session.access_token},cache:"no-store",body:JSON.stringify({action,...payload})});
+  const json=await res.json().catch(()=>({}));
+  if(!res.ok)throw new Error(json.error||"Unable to update banking data.");
+  return json;
  };
- const refresh=async()=>{
-  const n=++inflight.current;
-  setLoading(true);
-  try{const d=await api("status");if(n===inflight.current)setData(d);}
-  catch(e){if(n===inflight.current)onNotice(e.message);}
-  finally{if(n===inflight.current)setLoading(false);}
+ const load=async(silent=false)=>{
+  const req=++inflight.current;
+  if(!silent)setLoading(true);
+  try{const result=await api("status");if(req===inflight.current)setState(result);}
+  catch(e){if(req===inflight.current)onNotice(e.message);}
+  finally{if(req===inflight.current)setLoading(false);}
  };
- useEffect(()=>{refresh();return()=>{inflight.current++;}},[]);
- const items=data.items.filter(i=>i.scope===scope);
- const accounts=data.accounts.filter(a=>a.scope===scope);
- const transactions=data.transactions.filter(t=>t.scope===scope&&!t.is_removed);
- const startOfMonth=new Date();startOfMonth.setDate(1);startOfMonth.setHours(0,0,0,0);
- const filtered=useMemo(()=>transactions.filter(t=>{
-  const dt=new Date(t.date+"T12:00:00");
-  if(period==="month"&&dt<startOfMonth)return false;
-  if(period==="90"&&dt<new Date(Date.now()-90*86400000))return false;
-  if(account!=="all"&&t.plaid_account_id!==account)return false;
-  if(filter!=="All categories"&&customCategory(t)!==filter)return false;
-  if(tagFilter!=="All tags"&&!(t.tags||[]).includes(tagFilter))return false;
-  return [t.description,t.merchant_name,customCategory(t),...(t.tags||[])].some(x=>String(x||"").toLowerCase().includes(search.toLowerCase()));
- }),[transactions,period,account,filter,tagFilter,search,scope]);
- const report=filtered.filter(t=>!t.pending);
- const spent=report.filter(t=>t.amount>0&&customCategory(t)!=="Transfers").reduce((n,t)=>n+Number(t.amount),0);
- const takeout=report.filter(t=>t.amount>0&&customCategory(t)==="Takeout").reduce((n,t)=>n+Number(t.amount),0);
- const partner=report.filter(t=>t.amount>0&&(t.tags||[]).some(x=>x.toLowerCase()==="girlfriend")).reduce((n,t)=>n+Number(t.amount),0);
- const received=report.filter(t=>t.amount<0&&customCategory(t)!=="Transfers").reduce((n,t)=>n-Math.abs(Number(t.amount)),0);
- const categoryData=Object.entries(report.filter(t=>t.amount>0&&customCategory(t)!=="Transfers").reduce((map,t)=>{const cat=customCategory(t);map[cat]=(map[cat]||0)+Number(t.amount);return map;},{})).sort((a,b)=>b[1]-a[1]);
- const categories=["All categories",...new Set(transactions.map(customCategory))].sort((a,b)=>a==="All categories"?-1:b==="All categories"?1:a.localeCompare(b));
- const tags=["All tags",...new Set(transactions.flatMap(t=>t.tags||[]))].sort((a,b)=>a==="All tags"?-1:b==="All tags"?1:a.localeCompare(b));
- const plaidPendingKey="ignite_financials_plaid_link_session";
- const clearOAuth=()=>{
-  sessionStorage.removeItem(plaidPendingKey);
-  const url=new URL(window.location.href);
-  if(url.searchParams.has("oauth_state_id")){
-   url.searchParams.delete("oauth_state_id");
-   window.history.replaceState({}, "", url.pathname+url.search+url.hash);
+ useEffect(()=>{load();return()=>{inflight.current++;}},[]);
+ useEffect(()=>{setAccount("all");setKind("spending");setCategoryFilter("all");setMonth(currentMonth());},[scope]);
+ const items=safeArray(state.items).filter(i=>i.scope===scope);
+ const accounts=safeArray(state.accounts).filter(a=>a.scope===scope);
+ const categories=safeArray(state.categories).filter(c=>c.scope===scope);
+ const transactions=safeArray(state.transactions).filter(t=>t.scope===scope&&!t.is_removed);
+ const categoryById=useMemo(()=>new Map(categories.map(c=>[c.id,c])),[categories]);
+ const accountByPlaidId=useMemo(()=>new Map(accounts.map(a=>[a.plaid_account_id,a])),[accounts]);
+ const monthAccountTransactions=useMemo(()=>transactions.filter(t=>t.date?.startsWith(month)&&(account==="all"||t.plaid_account_id===account)),[transactions,month,account]);
+ const spending=useMemo(()=>monthAccountTransactions.filter(t=>Number(t.amount)>0&&!t.pending&&!t.exclude_from_spending),[monthAccountTransactions]);
+ const spendingTotal=spending.reduce((n,t)=>n+Number(t.amount),0);
+ const unassigned=spending.filter(t=>!t.spend_category_id||!categoryById.has(t.spend_category_id));
+ const categoryCards=categories.map(c=>({id:c.id,name:c.name,total:spending.filter(t=>t.spend_category_id===c.id).reduce((n,t)=>n+Number(t.amount),0),count:spending.filter(t=>t.spend_category_id===c.id).length})).sort((a,b)=>b.total-a.total||a.name.localeCompare(b.name));
+ const uncategorized={id:"uncategorized",name:"Uncategorized",total:unassigned.reduce((n,t)=>n+Number(t.amount),0),count:unassigned.length};
+ const displayed=monthAccountTransactions.filter(t=>{
+  if(kind==="spending"&&Number(t.amount)<=0)return false;
+  if(kind==="income"&&Number(t.amount)>=0)return false;
+  if(categoryFilter!=="all"){
+   if(categoryFilter==="uncategorized"){if(t.spend_category_id&&categoryById.has(t.spend_category_id))return false;}
+   else if(t.spend_category_id!==categoryFilter)return false;
   }
+  return [t.description,t.merchant_name,accountByPlaidId.get(t.plaid_account_id)?.name,...safeArray(t.tags)].some(x=>String(x||"").toLowerCase().includes(search.toLowerCase()));
+ }).sort((a,b)=>b.date.localeCompare(a.date));
+ const totalDeposits=monthAccountTransactions.filter(t=>Number(t.amount)<0&&!t.pending&&!t.exclude_from_spending).reduce((n,t)=>n+Math.abs(Number(t.amount)),0);
+ const allDates=transactions.length;
+ async function mutate(action,args={},message){
+  setBusy(true);
+  try{const v=await api(action,args);await load(true);if(message)onNotice(message);return v;}
+  catch(e){onNotice(e.message);return null;}
+  finally{setBusy(false);}
+ }
+ async function saveCategory(e){
+  e.preventDefault();
+  const name=newCategory.trim();
+  if(!name)return;
+  const result=await mutate("category-create",{scope,name},"Category created.");
+  if(result){setNewCategory("");setCategoryFilter("all");}
+ }
+ async function renameCategory(e){
+  e.preventDefault();
+  if(!editingId)return;
+  const result=await mutate("category-rename",{scope,category_id:editingId,name:editingName.trim()},"Category renamed everywhere.");
+  if(result){setEditingId(null);setEditingName("");}
+ }
+ async function deleteCategory(cat){
+  const affected=transactions.filter(t=>t.spend_category_id===cat.id).length;
+  if(!confirm("Delete \""+cat.name+"\"? "+(affected?affected+" transaction(s) will return to Uncategorized. ":"")+"The bank transactions themselves will stay saved."))return;
+  const result=await mutate("category-delete",{scope,category_id:cat.id},"Category deleted; purchases remain available.");
+  if(result&&categoryFilter===cat.id)setCategoryFilter("all");
+ }
+ async function assign(t,id){
+  setSavingId(t.id);
+  const previous=state;
+  setState(v=>({...v,transactions:v.transactions.map(row=>row.id===t.id?{...row,spend_category_id:id||null}:row)}));
+  try{await api("transaction-category",{transaction_id:t.id,category_id:id||null});}
+  catch(e){setState(previous);onNotice(e.message);}
+  finally{setSavingId(null);}
+ }
+ async function markExcluded(t,exclude){
+  setSavingId(t.id);
+  const previous=state;
+  setState(v=>({...v,transactions:v.transactions.map(row=>row.id===t.id?{...row,exclude_from_spending:exclude}:row)}));
+  try{await api("transaction-exclude",{transaction_id:t.id,exclude});}
+  catch(e){setState(previous);onNotice(e.message);}
+  finally{setSavingId(null);}
+ }
+ function openDetails(t){setDetails(t);setTagsDraft(safeArray(t.tags).join(", "));setBucketDraft(t.bucket_id||"");}
+ async function saveDetails(e){
+  e.preventDefault();
+  if(!details)return;
+  setBusy(true);
+  try{
+   await api("label",{transaction_id:details.id,category_id:state.transactions.find(t=>t.id===details.id)?.spend_category_id||null,tags:tagsDraft.split(",").map(s=>s.trim()).filter(Boolean),bucket_id:bucketDraft||null});
+   setDetails(null);await load(true);onNotice("Transaction details saved.");
+  }catch(e){onNotice(e.message);}
+  finally{setBusy(false);}
+ }
+ async function sync(){
+  if(!items.length)return;
+  await mutate("sync",{scope},"Bank sync requested. New bank transactions can take time to become available.");
+ }
+ async function disconnect(item){
+  if(!confirm("Disconnect "+item.institution_name+"? Imported transactions from this bank will be deleted. Your custom category names will remain."))return;
+  await mutate("disconnect",{item_id:item.id},"Bank disconnected.");
+ }
+ const pendingKey="ignite_financials_plaid_link_session";
+ const clearOAuth=()=>{
+  sessionStorage.removeItem(pendingKey);
+  const url=new URL(window.location.href);
+  if(url.searchParams.has("oauth_state_id")){url.searchParams.delete("oauth_state_id");window.history.replaceState({},"",url.pathname+url.search+url.hash);}
  };
- async function launchPlaidLink(token,linkScope,updateId=null,receivedRedirectUri=null){
-  const Plaid=await openPlaidScript();
+ async function launchLink(token,forScope,updating=null,receivedRedirectUri=null){
+  const Plaid=await openPlaid();
   const handler=Plaid.create({
-   token,
-   ...(receivedRedirectUri?{receivedRedirectUri}:{}),
+   token,...(receivedRedirectUri?{receivedRedirectUri}:{}),
    onSuccess:async(public_token,metadata)=>{
     setBusy(true);
     try{
-     if(!updateId){
+     if(!updating){
       const institution=metadata?.institution||{};
-      const linked=await api("exchange",{scope:linkScope,public_token,institution_id:institution.institution_id,institution_name:institution.name});
-      onNotice("Bank connected. "+(linked.account_count||0)+" account(s) imported. Transactions can take time to appear.");
-     }else{
-      await api("sync",{scope:linkScope});
-      onNotice("Bank connection refreshed.");
-     }
-     await refresh();
+      const result=await api("exchange",{scope:forScope,public_token,institution_id:institution.institution_id,institution_name:institution.name});
+      onNotice("Bank connected: "+(result.account_count||0)+" account(s). Transactions may take a little time to arrive.");
+     }else{await api("sync",{scope:forScope});onNotice("Bank connection refreshed.");}
+     await load(true);
     }catch(e){onNotice(e.message);}
     finally{clearOAuth();setBusy(false);handler.destroy?.();}
    },
-   onExit:(error)=>{
-    clearOAuth();setBusy(false);handler.destroy?.();
-    if(error)onNotice(error.display_message||"Bank connection was cancelled.");
-   }
+   onExit:e=>{clearOAuth();setBusy(false);handler.destroy?.();if(e)onNotice(e.display_message||"Bank authorization was cancelled.");}
   });
   handler.open();
  }
- async function connectBank(updateItem=null){
-  if(!data.configured){onNotice("Add PLAID_CLIENT_ID and PLAID_SECRET to this Vercel project first.");return;}
+ async function connect(item=null){
+  if(!state.configured){onNotice("Plaid credentials need to be configured on Vercel.");return;}
   setBusy(true);
   try{
-   const ret=await api("link-token",{scope,update_item_id:updateItem?.id});
-   sessionStorage.setItem(plaidPendingKey,JSON.stringify({token:ret.link_token,scope,updateId:updateItem?.id||null,createdAt:Date.now()}));
-   await launchPlaidLink(ret.link_token,scope,updateItem?.id||null);
+   const resp=await api("link-token",{scope,update_item_id:item?.id});
+   sessionStorage.setItem(pendingKey,JSON.stringify({token:resp.link_token,scope,updateId:item?.id||null,createdAt:Date.now()}));
+   await launchLink(resp.link_token,scope,item?.id||null);
   }catch(e){onNotice(e.message);setBusy(false);}
  }
  useEffect(()=>{
   const url=new URL(window.location.href);
   if(!url.searchParams.has("oauth_state_id"))return;
-  const pending=JSON.parse(sessionStorage.getItem(plaidPendingKey)||"null");
-  if(!pending||Date.now()-pending.createdAt>3*3600000){
-   onNotice("Your bank connection session expired. Start connecting your bank again.");
-   clearOAuth();return;
-  }
+  const pending=JSON.parse(sessionStorage.getItem(pendingKey)||"null");
+  if(!pending||Date.now()-pending.createdAt>10800000){clearOAuth();onNotice("Bank login expired. Please reconnect.");return;}
   setBusy(true);
-  launchPlaidLink(pending.token,pending.scope,pending.updateId,url.href)
-   .catch(e=>{onNotice(e.message);clearOAuth();setBusy(false);});
+  launchLink(pending.token,pending.scope,pending.updateId,url.href).catch(e=>{clearOAuth();setBusy(false);onNotice(e.message)});
  },[]);
- async function syncNow(){
-  if(!items.length)return;setBusy(true);
-  try{
-   const v=await api("sync",{scope});const failed=(v.results||[]).filter(x=>!x.ok);
-   onNotice(failed.length? "Sync finished with an issue: "+failed.map(x=>x.error).join(", "):"Bank transactions updated.");
-   await refresh();
-  }catch(e){onNotice(e.message);}finally{setBusy(false);}
- }
- async function unlink(item){
-  if(!confirm("Disconnect "+item.institution_name+"? This also deletes its imported bank transactions and custom labels. Existing manual ledger entries remain untouched."))return;
-  setBusy(true);
-  try{await api("disconnect",{item_id:item.id});onNotice("Bank disconnected.");await refresh();}
-  catch(e){onNotice(e.message);}finally{setBusy(false);}
- }
- function editLabel(t){setForm({category:t.category_override||customCategory(t),tags:(t.tags||[]).join(", "),bucket_id:t.bucket_id||""});setModal(t);}
- async function saveLabels(e){
-  e.preventDefault();if(!modal)return;setBusy(true);
-  try{
-   await api("label",{transaction_id:modal.id,category_override:form.category,tags:form.tags.split(",").map(t=>t.trim()).filter(Boolean),bucket_id:form.bucket_id||null});
-   setModal(null);onNotice("Category, tags and virtual bucket saved.");await refresh();
-  }catch(e){onNotice(e.message)}finally{setBusy(false)}
- }
- const accountById=new Map(accounts.map(a=>[a.plaid_account_id,a]));
- return <div className="bank-view">
-  <div className="bank-top-panel">
-   <div className="bank-top-icon"><Landmark size={22}/></div>
-   <div className="bank-top-content"><b>Connected bank accounts</b><p>Read-only. Your real bank balances and money never move.</p></div>
-   <div className="bank-top-buttons">{items.length>0&&<button className="button" disabled={busy} onClick={syncNow}><RefreshCw size={16} className={busy?"spin":""}/>Sync now</button>}<button className="primary" disabled={busy||!data.configured} onClick={()=>connectBank()}><Plus size={16}/>Connect bank</button></div>
-  </div>
-  {!data.configured&&<div className="bank-setup"><AlertCircle size={20}/><div><strong>One-time Plaid setup required</strong><p>In Vercel, add <code>PLAID_CLIENT_ID</code> and <code>PLAID_SECRET</code> under Settings → Environment Variables. Redeploy afterward. You'll first be in Sandbox for testing; switch to production only when your Plaid account is approved for live connections. Never put API secrets in GitHub or chat.</p></div></div>}
-  {data.configured&&data.environment!=="production"&&<div className="bank-sandbox"><AlertCircle size={16}/> Plaid Sandbox is enabled. This connects test banks only. Live banks require Plaid production access.</div>}
-  <div className="bank-accounts">
-   {loading?<div className="bank-load">Loading accounts…</div>:
-   !items.length?<div className="bank-empty-mini"><Building2 size={23}/><strong>No banks connected</strong><p>Connect your first bank to automatically import transactions.</p></div>:
-   items.map(item=><div className="bank-institution" key={item.id}>
-    <div className="bank-institution-head"><div className="bank-initial">{item.institution_name.slice(0,1).toUpperCase()}</div><div><strong>{item.institution_name}</strong><small>Last sync: {item.last_synced_at?new Date(item.last_synced_at).toLocaleString():"Waiting for first sync"}</small></div><span className={"bank-state "+(item.status==="error"?"err":"")}>{item.status==="error"?"Needs attention":"Connected"}</span></div>
-    <div className="bank-accounts-list">{accounts.filter(a=>a.bank_item_id===item.id).map(a=><div key={a.id}><Wallet size={15}/><span>{a.name}{a.mask?" ····"+a.mask:""}</span><small>{a.subtype||a.type||"Account"}</small></div>)}</div>
-    <div className="bank-account-actions"><button disabled={busy} onClick={()=>connectBank(item)}>Reconnect</button><button disabled={busy} onClick={()=>unlink(item)}><Link2Off size={13}/> Disconnect</button></div>
-   </div>)}
-  </div>
-  <div className="bank-stats">
-   <div><span>Total spending</span><strong>{usd(spent)}</strong><small>Posted transactions in selected filters</small></div>
-   <div><span>Takeout</span><strong>{usd(takeout)}</strong><small>Food delivery and takeaway</small></div>
-   <div><span>Girlfriend</span><strong>{usd(partner)}</strong><small>Purchases you've tagged</small></div>
-   <div><span>Money received</span><strong>{usd(-received)}</strong><small>Deposits excluding transfers</small></div>
-  </div>
-  <div className="bank-grid">
-   <section className="panel bank-breakdown"><div className="panel-head"><div><h2>Spending breakdown</h2><p>What you actually spent by category</p></div></div>{categoryData.length?<div className="bank-breakdown-inner">{categoryData.slice(0,8).map(([name,total])=><div className="bank-category-row" key={name}><div><strong>{name}</strong><span>{usd(total)}</span></div><div className="bank-meter"><div style={{width:(spent?total/spent*100:0)+"%"}}/></div></div>)}</div>:<div className="bank-empty-inline">Nothing to chart yet. Connect a bank or expand the date filter.</div>}</section>
-   <section className="panel bank-tag-tips"><div className="panel-head"><div><h2>How spending tags work</h2><p>Personal context beyond bank categories</p></div></div><div className="bank-tip"><div className="bank-tip-ico"><Tag size={19}/></div><div><strong>Tag girlfriend spending</strong><p>Open a transaction and enter <b>Girlfriend</b>. The dashboard totals every purchase carrying that tag.</p></div></div><div className="bank-tip"><div className="bank-tip-ico"><SlidersHorizontal size={19}/></div><div><strong>Assign virtual budgets</strong><p>Choose an allocation bucket for each purchase. No actual bank transfers happen.</p></div></div><div className="bank-tip"><div className="bank-tip-ico"><ShieldCheck size={19}/></div><div><strong>No double counting</strong><p>Imported bank transactions are separate from the manual revenue and profit ledger.</p></div></div></section>
-  </div>
-  <section className="panel bank-table-wrap">
-   <div className="panel-head"><div><h2>Bank transactions</h2><p>{filtered.length} transaction{filtered.length===1?"":"s"} shown · posted and pending</p></div><div className="bank-table-actions"><button className="button" disabled={busy||!items.length} onClick={syncNow}><RefreshCw size={15}/>Sync</button></div></div>
-   <div className="bank-filters">
-    <div className="searchbox"><Search size={15}/><input placeholder="Search merchant, tag or description" value={search} onChange={e=>setSearch(e.target.value)}/></div>
-    <select aria-label="Period" value={period} onChange={e=>setPeriod(e.target.value)}><option value="month">This month</option><option value="90">Last 90 days</option><option value="all">All time</option></select>
-    <select aria-label="Account" value={account} onChange={e=>setAccount(e.target.value)}><option value="all">All accounts</option>{accounts.map(a=><option key={a.id} value={a.plaid_account_id}>{a.name}{a.mask?" ··"+a.mask:""}</option>)}</select>
-    <select aria-label="Category" value={filter} onChange={e=>setFilter(e.target.value)}>{categories.map(x=><option key={x}>{x}</option>)}</select>
-    <select aria-label="Tag" value={tagFilter} onChange={e=>setTagFilter(e.target.value)}>{tags.map(x=><option key={x}>{x}</option>)}</select>
+ const accountsLabel=accounts.length+" account"+(accounts.length===1?"":"s")+" connected";
+
+ return <div className="spend-layout">
+  <div className="spend-month-bar">
+   <div className="spend-date-control"><button aria-label="Previous month" onClick={()=>setMonth(m=>shiftMonth(m,-1))}><ChevronLeft size={17}/></button><div><span>SPENDING FOR</span><strong>{formatMonth(month)}</strong></div><button aria-label="Next month" onClick={()=>setMonth(m=>shiftMonth(m,1))}><ChevronRight size={17}/></button><input type="month" aria-label="Choose month" value={month} onChange={e=>e.target.value&&setMonth(e.target.value)}/></div>
+   <div className="spend-toolbar">
+    <select aria-label="Bank account filter" value={account} onChange={e=>setAccount(e.target.value)}>
+     <option value="all">All accounts</option>{accounts.map(a=><option key={a.id} value={a.plaid_account_id}>{a.name}{a.mask?" ••"+a.mask:""}</option>)}
+    </select>
+    <button className="button" onClick={()=>setCategoryPanel(true)}><Settings2 size={16}/> Categories</button>
+    <button className="button" disabled={busy||!items.length} onClick={sync}><RefreshCw size={15}/>Sync</button>
+    <button className="primary" disabled={busy||!state.configured} onClick={()=>connect()}><Plus size={16}/>Bank</button>
    </div>
-   <div className="table-scroll"><table className="bank-table"><thead><tr><th>Merchant / description</th><th>Date</th><th>Category & tags</th><th>Account</th><th className="right">Amount</th><th/></tr></thead><tbody>
-    {filtered.map(t=><tr key={t.id}><td><div className="merchant"><div className={"merchant-icon "+(t.amount<0?"incoming":"")}><ReceiptText size={16}/></div><div><strong>{t.merchant_name||t.description}</strong><small>{t.pending?"Pending · ":""}{t.merchant_name?t.description:"Bank transaction"}</small></div></div></td><td>{moneyDate(t.date)}</td><td><span className="tag">{customCategory(t)}</span>{(t.tags||[]).slice(0,2).map(tag=><span className="bank-custom-tag" key={tag}>{tag}</span>)}</td><td>{accountById.get(t.plaid_account_id)?.name||"Bank account"}</td><td className={"right "+(t.amount<0?"amount-green":"amount-dark")}>{t.amount<0?"+":"−"}{usd(Math.abs(t.amount))}</td><td><button className="bank-edit-btn" onClick={()=>editLabel(t)}>Categorize</button></td></tr>)}
+  </div>
+  <div className="spend-headline">
+   <div><span>TOTAL SPENT</span><strong>{money(spendingTotal)}</strong><p>Posted purchases this month, across the selected account(s).</p></div>
+   <div className="spend-headline-side"><span>{spending.length} purchases</span><span>{unassigned.length} uncategorized</span></div>
+  </div>
+  <div className="spend-categories-head"><div><h2>Your categories</h2><p>Each category shows its monthly total. Click to filter purchases.</p></div><button onClick={()=>setCategoryPanel(true)}><Plus size={15}/> Manage</button></div>
+  <div className="spend-category-grid">
+   {categoryCards.map((c,i)=><button key={c.id} className={"spend-category-card "+(categoryFilter===c.id?"selected":"")} onClick={()=>{setKind("spending");setCategoryFilter(x=>x===c.id?"all":c.id);}}>
+     <span><span className="spend-category-dot" style={{background:["#e53935","#1e2635","#7c8595","#b58d4b","#ac5b65","#637e76"][i%6]}}/>{c.name}</span>
+     <strong>{money(c.total)}</strong><small>{c.count} purchase{c.count===1?"":"s"}</small>
+   </button>)}
+   <button className={"spend-category-card "+(categoryFilter==="uncategorized"?"selected":"")} onClick={()=>{setKind("spending");setCategoryFilter(x=>x==="uncategorized"?"all":"uncategorized");}}>
+    <span><span className="spend-category-dot muted"/>Uncategorized</span><strong>{money(uncategorized.total)}</strong><small>{uncategorized.count} to organize</small>
+   </button>
+   {categories.length===0&&<button className="spend-new-category-card" onClick={()=>setCategoryPanel(true)}><FolderPlus size={22}/><strong>Create your first category</strong><small>Choose whatever names make sense to you.</small></button>}
+  </div>
+  <section className="panel spend-transactions">
+   <div className="spend-table-heading">
+    <div><h2>Transactions</h2><p>Categorize directly from the dropdown. Changes update your totals immediately.</p></div>
+    <div className="spend-switch">{[["spending","Money out"],["income","Money in"],["all","All"]].map(([id,title])=><button key={id} onClick={()=>{setKind(id);setCategoryFilter("all");}} className={kind===id?"active":""}>{title}</button>)}</div>
+   </div>
+   <div className="spend-filters"><div className="searchbox"><Search size={16}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search any merchant…"/></div>{categoryFilter!=="all"&&<button className="spend-clear" onClick={()=>setCategoryFilter("all")}><X size={14}/> Clear category</button>}</div>
+   <div className="table-scroll"><table className="spend-table"><thead><tr><th>Merchant</th><th>Date</th><th>Category</th><th>Account</th><th className="right">Amount</th><th></th></tr></thead><tbody>
+    {displayed.map(t=><tr key={t.id} className={t.pending?"pending-row":""}>
+     <td><div className="spend-merchant"><div className={"spend-sign "+(t.amount<0?"incoming":"")} >{t.amount<0?<ArrowDownLeft size={16}/>:<ArrowUpRight size={16}/>}</div><div><strong>{t.merchant_name||t.description}</strong><small>{t.pending?"Pending • ":""}{t.exclude_from_spending?"Excluded • ":""}{safeArray(t.tags).join(", ")|| (t.merchant_name?t.description:"Transaction")}</small></div></div></td>
+     <td>{day(t.date)}</td>
+     <td>{t.amount>0?<select className="spend-assign" aria-label={"Category for "+t.description} value={categoryById.has(t.spend_category_id)?t.spend_category_id:""} disabled={savingId===t.id} onChange={e=>assign(t,e.target.value)}><option value="">Uncategorized</option>{categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>:<span className="spend-deposit-label">Deposit</span>}</td>
+     <td className="spend-account-cell">{accountByPlaidId.get(t.plaid_account_id)?.name||"Bank account"}</td>
+     <td className={"right spend-money "+(t.amount<0?"credit":"")}>{t.amount<0?"+":"−"}{money(Math.abs(t.amount))}</td>
+     <td><button aria-label={"Edit "+t.description} className="spend-more" onClick={()=>openDetails(t)}><MoreHorizontal size={18}/></button></td>
+    </tr>)}
    </tbody></table></div>
-   {!filtered.length&&<div className="bank-empty"><ReceiptText size={25}/><strong>No matching bank transactions</strong><p>{items.length?"Try syncing or expanding the filters. Historical activity may still be processing.":"Once you connect your bank, its transactions appear here."}</p></div>}
+   {loading?<div className="spend-empty">Loading your transactions…</div>:displayed.length===0?<div className="spend-empty"><ReceiptText size={27}/><strong>No transactions for this view</strong><p>{allDates?"Try another month, category, or account.":"Connect a bank to start tracking your purchases automatically."}</p></div>:null}
   </section>
-  <div className="bank-disclaimer"><LockKeyhole size={15}/> Bank access is read-only. Totals exclude pending transactions and internal transfers where identified. Categories are estimates until reviewed. Daily automatic syncing runs when Plaid is configured.</div>
-  {modal&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setModal(null);}}><div className="modal-card bank-edit-modal">
-   <div className="modal-heading"><div><div className="eyebrow">BANK TRANSACTION</div><h2>Organize this purchase</h2></div><button className="icon-btn" onClick={()=>setModal(null)}><X size={20}/></button></div>
-   <form className="modal-form" onSubmit={saveLabels}><div className="bank-modal-summary"><strong>{modal.description}</strong><span>{moneyDate(modal.date)} · {usd(Math.abs(modal.amount))}</span></div>
-   <div className="field"><label>Spending category</label><select value={form.category} onChange={e=>setForm(f=>({...f,category:e.target.value}))}>{[...new Set([...options,form.category])].filter(Boolean).map(x=><option key={x}>{x}</option>)}</select></div>
-   <div className="field"><label>Custom tags (separate with commas)</label><input value={form.tags} placeholder="Girlfriend, Date night, Gifts" onChange={e=>setForm(f=>({...f,tags:e.target.value}))}/></div>
-   <div className="field"><label>Virtual allocation bucket</label><select value={form.bucket_id} onChange={e=>setForm(f=>({...f,bucket_id:e.target.value}))}><option value="">Not assigned</option>{buckets.filter(b=>b.scope===scope).map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</select></div>
-   <p className="bank-modal-note">Tags and buckets are only labels for your records. No money moves. Bank transactions stay separate from your manually recorded income and expenses.</p>
-   <div className="modal-footer"><button type="button" className="button" onClick={()=>setModal(null)}>Cancel</button><button type="submit" className="primary" disabled={busy}><Check size={16}/>{busy?"Saving...":"Save categorization"}</button></div>
+  <div className="spend-connected-bar">
+   <span><LockKeyhole size={14}/>{accountsLabel} · Read-only · No money moves</span>
+   {items.length>0&&<button onClick={()=>setCategoryPanel("banks")}><Landmark size={15}/> Manage banks</button>}
+  </div>
+  {categoryPanel&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setCategoryPanel(false);}}><div className="modal-card spend-manage-modal">
+   <div className="modal-heading"><div><div className="eyebrow">SPENDING SETTINGS</div><h2>{categoryPanel==="banks"?"Connected banks":"Your categories"}</h2></div><button className="icon-btn" onClick={()=>setCategoryPanel(false)}><X size={20}/></button></div>
+   {categoryPanel==="banks"?<div className="spend-manage-body">
+    <p className="spend-helper">Connected banks automatically supply transactions for this workspace.</p>
+    {items.map(item=><div className="spend-category-manager-row" key={item.id}><div className="spend-manager-name"><Landmark size={17}/><strong>{item.institution_name}</strong><small>{item.last_synced_at?"Synced "+new Date(item.last_synced_at).toLocaleDateString():"Waiting to sync"}</small></div><button disabled={busy} onClick={()=>connect(item)}>Reconnect</button><button disabled={busy} className="danger" onClick={()=>disconnect(item)}><Link2Off size={15}/></button></div>)}
+    <button className="primary full" disabled={busy} onClick={()=>{setCategoryPanel(false);connect();}}><Plus size={16}/> Connect another bank</button>
+   </div>:<div className="spend-manage-body">
+    <p className="spend-helper">You decide what categories exist. Renaming a category updates all purchases. Deleting it moves those transactions to Uncategorized.</p>
+    <form className="spend-add-category" onSubmit={saveCategory}><input maxLength={40} aria-label="New category name" value={newCategory} onChange={e=>setNewCategory(e.target.value)} placeholder="New category name (e.g. Takeout)" required/><button className="primary" disabled={busy||!newCategory.trim()}><Plus size={16}/> Add</button></form>
+    <div className="spend-category-manager">{categories.length?categories.map(cat=><div className="spend-category-manager-row" key={cat.id}>{editingId===cat.id?<form className="spend-rename" onSubmit={renameCategory}><input aria-label={"Rename "+cat.name} value={editingName} maxLength={40} autoFocus onChange={e=>setEditingName(e.target.value)}/><button type="submit" disabled={busy||!editingName.trim()}><Check size={17}/></button><button type="button" onClick={()=>setEditingId(null)}><X size={17}/></button></form>:<><div className="spend-manager-name"><strong>{cat.name}</strong><small>{transactions.filter(t=>t.spend_category_id===cat.id).length} assigned</small></div><button aria-label={"Rename "+cat.name} disabled={busy} onClick={()=>{setEditingId(cat.id);setEditingName(cat.name);}}><Pencil size={16}/></button><button aria-label={"Delete "+cat.name} className="danger" disabled={busy} onClick={()=>deleteCategory(cat)}><Trash2 size={16}/></button></>}</div>):<div className="spend-empty-categories">No preset categories. Add your own above.</div>}</div>
+   </div>}
+  </div></div>}
+  {details&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setDetails(null);}}><div className="modal-card spend-details-modal">
+   <div className="modal-heading"><div><div className="eyebrow">TRANSACTION DETAILS</div><h2>{details.merchant_name||details.description}</h2></div><button className="icon-btn" onClick={()=>setDetails(null)}><X size={20}/></button></div>
+   <form className="modal-form" onSubmit={saveDetails}>
+    <div className="spend-transaction-summary"><strong>{money(Math.abs(details.amount))}</strong><span>{day(details.date)} · {accountByPlaidId.get(details.plaid_account_id)?.name||"Bank"}</span></div>
+    <div className="field"><label>Additional tags (optional)</label><input placeholder="Girlfriend, Date night, Gifts…" value={tagsDraft} onChange={e=>setTagsDraft(e.target.value)}/></div>
+    <div className="field"><label>Virtual allocation bucket (optional)</label><select value={bucketDraft} onChange={e=>setBucketDraft(e.target.value)}><option value="">None</option>{buckets.filter(b=>b.scope===scope).map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</select></div>
+    {details.amount>0&&<label className="spend-exclude"><input type="checkbox" checked={!!state.transactions.find(t=>t.id===details.id)?.exclude_from_spending} disabled={savingId===details.id} onChange={e=>markExcluded(details,e.target.checked)}/><span>Exclude this transaction from spending totals<small>Useful for transfers, credit-card payments, or duplicates.</small></span></label>}
+    <div className="modal-footer"><button type="button" className="button" onClick={()=>setDetails(null)}>Cancel</button><button type="submit" className="primary" disabled={busy}><Check size={16}/>Save</button></div>
    </form>
   </div></div>}
  </div>;
