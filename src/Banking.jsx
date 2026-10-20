@@ -47,11 +47,17 @@ export default function Banking({db,scope,buckets,onNotice}){
  const categoryById=useMemo(()=>new Map(categories.map(c=>[c.id,c])),[categories]);
  const accountByPlaidId=useMemo(()=>new Map(accounts.map(a=>[a.plaid_account_id,a])),[accounts]);
  const monthAccountTransactions=useMemo(()=>transactions.filter(t=>t.date?.startsWith(month)&&(account==="all"||t.plaid_account_id===account)),[transactions,month,account]);
- const spending=useMemo(()=>monthAccountTransactions.filter(t=>Number(t.amount)>0&&!t.pending&&!t.exclude_from_spending),[monthAccountTransactions]);
+ const spending=useMemo(()=>monthAccountTransactions.filter(t=>Number(t.amount)>0&&!t.exclude_from_spending),[monthAccountTransactions]);
+ const pendingSpending=spending.filter(t=>t.pending);
+ const pendingTotal=pendingSpending.reduce((sum,t)=>sum+Number(t.amount),0);
  const spendingTotal=spending.reduce((n,t)=>n+Number(t.amount),0);
+ const postedTotal=spendingTotal-pendingTotal;
  const unassigned=spending.filter(t=>!t.spend_category_id||!categoryById.has(t.spend_category_id));
- const categoryCards=categories.map(c=>({id:c.id,name:c.name,total:spending.filter(t=>t.spend_category_id===c.id).reduce((n,t)=>n+Number(t.amount),0),count:spending.filter(t=>t.spend_category_id===c.id).length})).sort((a,b)=>b.total-a.total||a.name.localeCompare(b.name));
- const uncategorized={id:"uncategorized",name:"Uncategorized",total:unassigned.reduce((n,t)=>n+Number(t.amount),0),count:unassigned.length};
+ const categoryCards=categories.map(c=>{
+  const purchases=spending.filter(t=>t.spend_category_id===c.id);
+  return {id:c.id,name:c.name,total:purchases.reduce((sum,t)=>sum+Number(t.amount),0),count:purchases.length,pendingCount:purchases.filter(t=>t.pending).length};
+ }).sort((a,b)=>b.total-a.total||a.name.localeCompare(b.name));
+ const uncategorized={id:"uncategorized",name:"Uncategorized",total:unassigned.reduce((n,t)=>n+Number(t.amount),0),count:unassigned.length,pendingCount:unassigned.filter(t=>t.pending).length};
  const displayed=monthAccountTransactions.filter(t=>{
   if(kind==="spending"&&Number(t.amount)<=0)return false;
   if(kind==="income"&&Number(t.amount)>=0)return false;
@@ -90,18 +96,26 @@ export default function Banking({db,scope,buckets,onNotice}){
  }
  async function assign(t,id){
   setSavingId(t.id);
-  const previous=state;
+  const previousId=t.spend_category_id||null;
   setState(v=>({...v,transactions:v.transactions.map(row=>row.id===t.id?{...row,spend_category_id:id||null}:row)}));
-  try{await api("transaction-category",{transaction_id:t.id,category_id:id||null});}
-  catch(e){setState(previous);onNotice(e.message);}
+  try{
+   await api("transaction-category",{transaction_id:t.id,category_id:id||null});
+   await load(true);
+  }catch(e){
+   setState(v=>({...v,transactions:v.transactions.map(row=>row.id===t.id?{...row,spend_category_id:previousId}:row)}));
+   onNotice("Couldn't save category: "+e.message);
+  }
   finally{setSavingId(null);}
  }
  async function markExcluded(t,exclude){
   setSavingId(t.id);
-  const previous=state;
+  const previousValue=!!t.exclude_from_spending;
   setState(v=>({...v,transactions:v.transactions.map(row=>row.id===t.id?{...row,exclude_from_spending:exclude}:row)}));
-  try{await api("transaction-exclude",{transaction_id:t.id,exclude});}
-  catch(e){setState(previous);onNotice(e.message);}
+  try{await api("transaction-exclude",{transaction_id:t.id,exclude});await load(true);}
+  catch(e){
+   setState(v=>({...v,transactions:v.transactions.map(row=>row.id===t.id?{...row,exclude_from_spending:previousValue}:row)}));
+   onNotice(e.message);
+  }
   finally{setSavingId(null);}
  }
  function openDetails(t){setDetails(t);setTagsDraft(safeArray(t.tags).join(", "));setBucketDraft(t.bucket_id||"");}
@@ -181,23 +195,23 @@ export default function Banking({db,scope,buckets,onNotice}){
    </div>
   </div>
   <div className="spend-headline">
-   <div><span>TOTAL SPENT</span><strong>{money(spendingTotal)}</strong><p>Posted purchases this month, across the selected account(s).</p></div>
-   <div className="spend-headline-side"><span>{spending.length} purchases</span><span>{unassigned.length} uncategorized</span></div>
+   <div><span>THIS MONTH'S SPENDING</span><strong>{money(spendingTotal)}</strong><p>{money(postedTotal)} posted{pendingSpending.length?" + "+money(pendingTotal)+" pending":""} · Includes pending purchases</p></div>
+   <div className="spend-headline-side"><span>{spending.length} purchases</span><span>{unassigned.length} uncategorized</span>{pendingSpending.length>0&&<span>{pendingSpending.length} pending</span>}</div>
   </div>
   <div className="spend-categories-head"><div><h2>Your categories</h2><p>Each category shows its monthly total. Click to filter purchases.</p></div><button onClick={()=>setCategoryPanel(true)}><Plus size={15}/> Manage</button></div>
   <div className="spend-category-grid">
    {categoryCards.map((c,i)=><button key={c.id} className={"spend-category-card "+(categoryFilter===c.id?"selected":"")} onClick={()=>{setKind("spending");setCategoryFilter(x=>x===c.id?"all":c.id);}}>
      <span><span className="spend-category-dot" style={{background:["#e53935","#1e2635","#7c8595","#b58d4b","#ac5b65","#637e76"][i%6]}}/>{c.name}</span>
-     <strong>{money(c.total)}</strong><small>{c.count} purchase{c.count===1?"":"s"}</small>
+     <strong>{money(c.total)}</strong><small>{c.count} purchase{c.count===1?"":"s"}{c.pendingCount>0?" · "+c.pendingCount+" pending":""}</small>
    </button>)}
    <button className={"spend-category-card "+(categoryFilter==="uncategorized"?"selected":"")} onClick={()=>{setKind("spending");setCategoryFilter(x=>x==="uncategorized"?"all":"uncategorized");}}>
-    <span><span className="spend-category-dot muted"/>Uncategorized</span><strong>{money(uncategorized.total)}</strong><small>{uncategorized.count} to organize</small>
+    <span><span className="spend-category-dot muted"/>Uncategorized</span><strong>{money(uncategorized.total)}</strong><small>{uncategorized.count} to organize{uncategorized.pendingCount>0?" · "+uncategorized.pendingCount+" pending":""}</small>
    </button>
    {categories.length===0&&<button className="spend-new-category-card" onClick={()=>setCategoryPanel(true)}><FolderPlus size={22}/><strong>Create your first category</strong><small>Choose whatever names make sense to you.</small></button>}
   </div>
   <section className="panel spend-transactions">
    <div className="spend-table-heading">
-    <div><h2>Transactions</h2><p>Categorize directly from the dropdown. Changes update your totals immediately.</p></div>
+    <div><h2>Transactions</h2><p>Category totals above update immediately, including pending purchases.</p></div>
     <div className="spend-switch">{[["spending","Money out"],["income","Money in"],["all","All"]].map(([id,title])=><button key={id} onClick={()=>{setKind(id);setCategoryFilter("all");}} className={kind===id?"active":""}>{title}</button>)}</div>
    </div>
    <div className="spend-filters"><div className="searchbox"><Search size={16}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search any merchant…"/></div>{categoryFilter!=="all"&&<button className="spend-clear" onClick={()=>setCategoryFilter("all")}><X size={14}/> Clear category</button>}</div>
@@ -205,7 +219,7 @@ export default function Banking({db,scope,buckets,onNotice}){
     {displayed.map(t=><tr key={t.id} className={t.pending?"pending-row":""}>
      <td><div className="spend-merchant"><div className={"spend-sign "+(t.amount<0?"incoming":"")} >{t.amount<0?<ArrowDownLeft size={16}/>:<ArrowUpRight size={16}/>}</div><div><strong>{t.merchant_name||t.description}</strong><small>{t.pending?"Pending • ":""}{t.exclude_from_spending?"Excluded • ":""}{safeArray(t.tags).join(", ")|| (t.merchant_name?t.description:"Transaction")}</small></div></div></td>
      <td>{day(t.date)}</td>
-     <td>{t.amount>0?<select className="spend-assign" aria-label={"Category for "+t.description} value={categoryById.has(t.spend_category_id)?t.spend_category_id:""} disabled={savingId===t.id} onChange={e=>assign(t,e.target.value)}><option value="">Uncategorized</option>{categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>:<span className="spend-deposit-label">Deposit</span>}</td>
+     <td>{t.amount>0?<select className="spend-assign" aria-label={"Category for "+t.description} value={categoryById.has(t.spend_category_id)?t.spend_category_id:""} disabled={savingId!==null} onChange={e=>assign(t,e.target.value)}><option value="">Uncategorized</option>{categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>:<span className="spend-deposit-label">Deposit</span>}</td>
      <td className="spend-account-cell">{accountByPlaidId.get(t.plaid_account_id)?.name||"Bank account"}</td>
      <td className={"right spend-money "+(t.amount<0?"credit":"")}>{t.amount<0?"+":"−"}{money(Math.abs(t.amount))}</td>
      <td><button aria-label={"Edit "+t.description} className="spend-more" onClick={()=>openDetails(t)}><MoreHorizontal size={18}/></button></td>
