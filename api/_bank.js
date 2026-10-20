@@ -93,7 +93,19 @@ export async function syncItem(db,item){
   for(let i=0;i<group.length;i+=150){
    const payload=group.slice(i,i+150).filter(t=>t.transaction_id&&t.date).map(t=>cleanBankTransaction(t,item));
    if(!payload.length)continue;
-   const {error}=await db.from("finance_bank_transactions").upsert(payload,{onConflict:"plaid_transaction_id"});
+   // Preserve custom user classification on every Plaid refresh, including modified transactions.
+   const ids=payload.map(t=>t.plaid_transaction_id);
+   const {data:existing,error:lookupError}=await db.from("finance_bank_transactions")
+    .select("plaid_transaction_id,category_override,tags,bucket_id")
+    .eq("user_id",item.user_id).in("plaid_transaction_id",ids);
+   if(lookupError)throw lookupError;
+   const saved=new Map((existing||[]).map(t=>[t.plaid_transaction_id,t]));
+   const withUserEdits=payload.map(t=>{
+    const prior=saved.get(t.plaid_transaction_id);
+    if(!prior)return t;
+    return {...t,category_override:prior.category_override,tags:prior.tags||[],bucket_id:prior.bucket_id};
+   });
+   const {error}=await db.from("finance_bank_transactions").upsert(withUserEdits,{onConflict:"plaid_transaction_id"});
    if(error)throw error;
   }
  }
