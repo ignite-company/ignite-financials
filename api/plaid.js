@@ -15,7 +15,7 @@ export default async function handler(req,res){
    if(i.error||a.error||c.error)throw i.error||a.error||c.error;
    let transactions=[];
    for(let offset=0;offset<6000;offset+=1000){
-    const r=await db.from("finance_bank_transactions").select("id,bank_item_id,plaid_account_id,scope,date,description,merchant_name,amount,category_primary,category_detailed,category_override,spend_category_id,exclude_from_spending,tags,bucket_id,pending,is_removed").eq("user_id",user.id).eq("is_removed",false).order("date",{ascending:false}).range(offset,offset+999);
+    const r=await db.from("finance_bank_transactions").select("id,bank_item_id,plaid_account_id,scope,date,description,merchant_name,amount,category_primary,category_detailed,category_override,spend_category_id,inflow_type,exclude_from_spending,tags,bucket_id,pending,is_removed").eq("user_id",user.id).eq("is_removed",false).order("date",{ascending:false}).range(offset,offset+999);
     if(r.error)throw r.error;
     transactions.push(...r.data);
     if(r.data.length<1000)break;
@@ -88,6 +88,22 @@ export default async function handler(req,res){
    const {data:changed,error}=await db.from("finance_spend_categories").update({name,updated_at:new Date().toISOString()}).eq("id",current.id).eq("user_id",user.id).eq("scope",body.scope).select("id,scope,name").single();
    if(error){if(error.code==="23505")return res.status(409).json({error:"That category already exists."});throw error;}
    return res.json({category:changed});
+  }
+  if(action==="transaction-inflow"){
+   const {data:t,error:findError}=await db.from("finance_bank_transactions")
+    .select("id,amount").eq("id",body.transaction_id).eq("user_id",user.id).maybeSingle();
+   if(findError)throw findError;
+   if(!t)return res.status(404).json({error:"Transaction not found."});
+   if(Number(t.amount)>=0)return res.status(400).json({error:"Only incoming bank transactions can be classified as credits."});
+   const allowed=new Set(["business_revenue","personal_income","transfer","refund"]);
+   const inflowType=body.inflow_type==null||body.inflow_type===""?null:body.inflow_type;
+   if(inflowType!==null&&!allowed.has(inflowType))return res.status(400).json({error:"Invalid money-in classification."});
+   const {data:saved,error:writeError}=await db.from("finance_bank_transactions")
+    .update({inflow_type:inflowType,updated_at:new Date().toISOString()})
+    .eq("id",t.id).eq("user_id",user.id).select("id,inflow_type").single();
+   if(writeError)throw writeError;
+   if(saved.inflow_type!==inflowType)throw new Error("Classification could not be confirmed.");
+   return res.json({saved:true,transaction:saved});
   }
   if(action==="transaction-category"||action==="transaction-exclude"){
    const {data:t,error}=await db.from("finance_bank_transactions").select("id,scope").eq("id",body.transaction_id).eq("user_id",user.id).maybeSingle();
