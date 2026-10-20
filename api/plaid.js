@@ -68,7 +68,7 @@ export default async function handler(req,res){
   if(action==="category-create"||action==="category-rename"||action==="category-delete"){
    if(!verifyScope(body.scope))return res.status(400).json({error:"Invalid workspace."});
    if(action==="category-create"){
-    const name=String(body.name||"").trim().replace(/\\s+/g," ");
+    const name=String(body.name||"").trim().replace(/\s+/g," ");
     if(name.length<1||name.length>40)return res.status(400).json({error:"Category names must have 1–40 characters."});
     const {data:added,error}=await db.from("finance_spend_categories").insert({user_id:user.id,scope:body.scope,name}).select("id,scope,name").single();
     if(error){if(error.code==="23505")return res.status(409).json({error:"That category already exists."});throw error;}
@@ -83,7 +83,7 @@ export default async function handler(req,res){
     if(error)throw error;
     return res.json({deleted:true});
    }
-   const name=String(body.name||"").trim().replace(/\\s+/g," ");
+   const name=String(body.name||"").trim().replace(/\s+/g," ");
    if(name.length<1||name.length>40)return res.status(400).json({error:"Category names must have 1–40 characters."});
    const {data:changed,error}=await db.from("finance_spend_categories").update({name,updated_at:new Date().toISOString()}).eq("id",current.id).eq("user_id",user.id).eq("scope",body.scope).select("id,scope,name").single();
    if(error){if(error.code==="23505")return res.status(409).json({error:"That category already exists."});throw error;}
