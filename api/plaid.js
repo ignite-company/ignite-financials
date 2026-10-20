@@ -7,19 +7,20 @@ export default async function handler(req,res){
   const user=await authenticate(req);
   const db=serverDb(),body=req.body||{},action=body.action;
   if(action==="status"){
-   const [i,a]=await Promise.all([
+   const [i,a,c]=await Promise.all([
     db.from("finance_bank_items").select("id,scope,institution_name,institution_id,status,last_synced_at,created_at").eq("user_id",user.id).order("created_at",{ascending:false}),
-    db.from("finance_bank_accounts").select("id,bank_item_id,plaid_account_id,scope,name,mask,type,subtype").eq("user_id",user.id)
+    db.from("finance_bank_accounts").select("id,bank_item_id,plaid_account_id,scope,name,mask,type,subtype").eq("user_id",user.id),
+    db.from("finance_spend_categories").select("id,scope,name").eq("user_id",user.id).order("created_at",{ascending:true})
    ]);
-   if(i.error||a.error)throw i.error||a.error;
+   if(i.error||a.error||c.error)throw i.error||a.error||c.error;
    let transactions=[];
    for(let offset=0;offset<6000;offset+=1000){
-    const r=await db.from("finance_bank_transactions").select("id,bank_item_id,plaid_account_id,scope,date,description,merchant_name,amount,category_primary,category_detailed,category_override,tags,bucket_id,pending,is_removed").eq("user_id",user.id).eq("is_removed",false).order("date",{ascending:false}).range(offset,offset+999);
+    const r=await db.from("finance_bank_transactions").select("id,bank_item_id,plaid_account_id,scope,date,description,merchant_name,amount,category_primary,category_detailed,category_override,spend_category_id,exclude_from_spending,tags,bucket_id,pending,is_removed").eq("user_id",user.id).eq("is_removed",false).order("date",{ascending:false}).range(offset,offset+999);
     if(r.error)throw r.error;
     transactions.push(...r.data);
     if(r.data.length<1000)break;
    }
-   return res.json({configured:configured(),environment:process.env.PLAID_ENV==="production"?"production":"sandbox",items:i.data,accounts:a.data,transactions});
+   return res.json({configured:configured(),environment:process.env.PLAID_ENV==="production"?"production":"sandbox",items:i.data,accounts:a.data,categories:c.data,transactions});
   }
   if(action==="link-token"){
    if(!configured())return res.status(503).json({error:"Plaid API credentials are not configured in Vercel yet."});
@@ -63,17 +64,67 @@ export default async function handler(req,res){
    const results=await syncOwnedItems(db,user.id,verifyScope(body.scope)?body.scope:null);
    return res.json({results});
   }
+
+  if(action==="category-create"||action==="category-rename"||action==="category-delete"){
+   if(!verifyScope(body.scope))return res.status(400).json({error:"Invalid workspace."});
+   if(action==="category-create"){
+    const name=String(body.name||"").trim().replace(/\\s+/g," ");
+    if(name.length<1||name.length>40)return res.status(400).json({error:"Category names must have 1–40 characters."});
+    const {data:added,error}=await db.from("finance_spend_categories").insert({user_id:user.id,scope:body.scope,name}).select("id,scope,name").single();
+    if(error){if(error.code==="23505")return res.status(409).json({error:"That category already exists."});throw error;}
+    return res.json({category:added});
+   }
+   if(typeof body.category_id!=="string")return res.status(400).json({error:"Choose a category."});
+   const {data:current,error:findError}=await db.from("finance_spend_categories").select("id,name").eq("id",body.category_id).eq("user_id",user.id).eq("scope",body.scope).maybeSingle();
+   if(findError)throw findError;
+   if(!current)return res.status(404).json({error:"Category no longer exists."});
+   if(action==="category-delete"){
+    const {error}=await db.from("finance_spend_categories").delete().eq("id",current.id).eq("user_id",user.id).eq("scope",body.scope);
+    if(error)throw error;
+    return res.json({deleted:true});
+   }
+   const name=String(body.name||"").trim().replace(/\\s+/g," ");
+   if(name.length<1||name.length>40)return res.status(400).json({error:"Category names must have 1–40 characters."});
+   const {data:changed,error}=await db.from("finance_spend_categories").update({name,updated_at:new Date().toISOString()}).eq("id",current.id).eq("user_id",user.id).eq("scope",body.scope).select("id,scope,name").single();
+   if(error){if(error.code==="23505")return res.status(409).json({error:"That category already exists."});throw error;}
+   return res.json({category:changed});
+  }
+  if(action==="transaction-category"||action==="transaction-exclude"){
+   const {data:t,error}=await db.from("finance_bank_transactions").select("id,scope").eq("id",body.transaction_id).eq("user_id",user.id).maybeSingle();
+   if(error)throw error;
+   if(!t)return res.status(404).json({error:"Transaction not found."});
+   if(action==="transaction-category"){
+    const categoryId=body.category_id||null;
+    if(categoryId){
+     const {data:c,error:ce}=await db.from("finance_spend_categories").select("id").eq("id",categoryId).eq("scope",t.scope).eq("user_id",user.id).maybeSingle();
+     if(ce)throw ce;
+     if(!c)return res.status(400).json({error:"Create or select a category in this workspace."});
+    }
+    const {error:writeError}=await db.from("finance_bank_transactions").update({spend_category_id:categoryId,updated_at:new Date().toISOString()}).eq("id",t.id).eq("user_id",user.id);
+    if(writeError)throw writeError;
+    return res.json({saved:true});
+   }
+   if(typeof body.exclude!=="boolean")return res.status(400).json({error:"Invalid transaction setting."});
+   const {error:writeError}=await db.from("finance_bank_transactions").update({exclude_from_spending:body.exclude,updated_at:new Date().toISOString()}).eq("id",t.id).eq("user_id",user.id);
+   if(writeError)throw writeError;
+   return res.json({saved:true});
+  }
   if(action==="label"){
    const {data:t,error}=await db.from("finance_bank_transactions").select("id,scope").eq("id",body.transaction_id).eq("user_id",user.id).single();
    if(error||!t)return res.status(404).json({error:"Transaction not found."});
    const tagArray=Array.isArray(body.tags)?body.tags.map(x=>String(x).trim().slice(0,40)).filter(Boolean).slice(0,12):[];
-   const category=String(body.category_override||"").trim().slice(0,90)||null;
+   const categoryId=body.category_id||null;
+   if(categoryId){
+    const {data:category,error:categoryError}=await db.from("finance_spend_categories").select("id").eq("id",categoryId).eq("scope",t.scope).eq("user_id",user.id).maybeSingle();
+    if(categoryError)throw categoryError;
+    if(!category)return res.status(400).json({error:"Invalid spending category."});
+   }
    const bucket=body.bucket_id||null;
    if(bucket){
     const {data:b}=await db.from("finance_buckets").select("id").eq("id",bucket).eq("user_id",user.id).eq("scope",t.scope).maybeSingle();
     if(!b)return res.status(400).json({error:"Invalid allocation bucket."});
    }
-   const {error:saveError}=await db.from("finance_bank_transactions").update({tags:[...new Set(tagArray)],category_override:category,bucket_id:bucket,updated_at:new Date().toISOString()}).eq("id",t.id).eq("user_id",user.id);
+   const {error:saveError}=await db.from("finance_bank_transactions").update({tags:[...new Set(tagArray)],spend_category_id:categoryId,bucket_id:bucket,updated_at:new Date().toISOString()}).eq("id",t.id).eq("user_id",user.id);
    if(saveError)throw saveError;
    return res.json({saved:true});
   }
