@@ -38,3 +38,11 @@ export function shiftRevenueMonth(month, offset) {
   const date = new Date(year, monthNumber - 1 + offset, 1);
   return date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0");
 }
+
+// Displays ten calendar days even when the range crosses the start of a month.
+export function recentDailyRevenue(transactions, today, limit=10){
+ if(!/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(today))throw new Error("Expected YYYY-MM-DD");
+ const current=today.slice(0,7),previous=shiftRevenueMonth(current,-1);
+ return [previous,current].flatMap(month=>summarizeDailyRevenue(transactions,month).days)
+  .filter(day=>day.date<=today).slice(-limit).reverse();
+}
