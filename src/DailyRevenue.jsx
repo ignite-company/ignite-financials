@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { ArrowDownRight, ArrowUpRight, ChevronDown, ChevronLeft, ChevronRight, CalendarDays, Trophy } from "lucide-react";
-import { shiftRevenueMonth, summarizeDailyRevenue } from "./dailyRevenueMath.js";
+import { recentDailyRevenue, shiftRevenueMonth, summarizeDailyRevenue } from "./dailyRevenueMath.js";
 
 const formatMoney = value => new Intl.NumberFormat("en-US", {
   style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2
@@ -21,7 +21,7 @@ export function DailyRevenuePreview({ payments, onViewAll }) {
   const today = todayLocal();
   const summary = useMemo(() => summarizeDailyRevenue(payments, today.slice(0, 7)), [payments, today]);
   const todayRow = summary.days.find(row => row.date === today);
-  const recent = summary.days.filter(row => row.date <= today).slice(-7).reverse();
+  const recent = useMemo(() => recentDailyRevenue(payments, today, 10), [payments, today]);
 
   return <section className="panel daily-preview">
     <div className="panel-head">
@@ -35,7 +35,7 @@ export function DailyRevenuePreview({ payments, onViewAll }) {
         <span className="daily-preview-count">{pluralPayments(todayRow?.count || 0)} recorded today</span>
         <div className="daily-preview-month"><span>{formatMonth(today.slice(0, 7))} so far</span><b>{formatMoney(summary.total)}</b></div>
       </div>
-      <div className="daily-preview-list" aria-label="Last seven days of recorded revenue">
+      <div className="daily-preview-list" aria-label="Last ten days of recorded revenue">
         {recent.map(day => <div className="daily-preview-line" key={day.date}>
           <span>{formatDay(day.date)}{day.date === today && <em>Today</em>}</span>
           <small>{pluralPayments(day.count)}</small>
