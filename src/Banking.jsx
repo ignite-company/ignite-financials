@@ -1,6 +1,7 @@
 import React, {useEffect,useMemo,useRef,useState} from "react";
 import { summarizeSpending } from "./spendingMath.js";
 import { compareBankTransactions } from "./bankTransactionOrder.js";
+import { BANK_CATEGORY_WORKSPACES, categoriesForWorkspace } from "./bankCategoryScope.js";
 import { INFLOW_TYPES,INFLOW_UNCLASSIFIED,summarizeInflows } from "./inflowMath.js";
 import {ArrowDownLeft,ArrowUpRight,Building2,Check,ChevronLeft,ChevronRight,CircleHelp,FolderPlus,Landmark,Link2Off,LockKeyhole,MoreHorizontal,Pencil,Plus,ReceiptText,RefreshCw,Search,Settings2,Tag,Trash2,X} from "lucide-react";
 
@@ -61,10 +62,16 @@ export default function Banking({db,scope,buckets,onNotice}){
   finally{if(req===inflight.current)setLoading(false);}
  };
  useEffect(()=>{load(false,true);return()=>{inflight.current++;}},[]);
- useEffect(()=>{setAccount("all");setKind("spending");setCategoryFilter("all");setMonth(currentMonth());},[scope]);
+ useEffect(()=>{
+  setAccount("all");setKind("spending");setCategoryFilter("all");setMonth(currentMonth());
+  setCategoryPanel(false);setNewCategory("");setEditingId(null);setEditingName("");setDetails(null);
+  setLastSavedId(null);
+ },[scope]);
  const items=safeArray(state.items).filter(i=>i.scope===scope);
  const accounts=safeArray(state.accounts).filter(a=>a.scope===scope);
- const categories=safeArray(state.categories).filter(c=>c.scope===scope);
+ const categories=categoriesForWorkspace(state.categories,scope);
+ const workspaceLabel=BANK_CATEGORY_WORKSPACES[scope]||"Workspace";
+ const otherWorkspaceLabel=BANK_CATEGORY_WORKSPACES[scope==="business"?"personal":"business"];
  const transactions=safeArray(state.transactions).filter(t=>t.scope===scope&&!t.is_removed);
  const categoryById=useMemo(()=>new Map(categories.map(c=>[c.id,c])),[categories]);
  const accountByPlaidId=useMemo(()=>new Map(accounts.map(a=>[a.plaid_account_id,a])),[accounts]);
@@ -101,19 +108,19 @@ export default function Banking({db,scope,buckets,onNotice}){
   e.preventDefault();
   const name=newCategory.trim();
   if(!name)return;
-  const result=await mutate("category-create",{scope,name},"Category created.");
+  const result=await mutate("category-create",{scope,name},"Category created in "+workspaceLabel+".");
   if(result){setNewCategory("");setCategoryFilter("all");}
  }
  async function renameCategory(e){
   e.preventDefault();
   if(!editingId)return;
-  const result=await mutate("category-rename",{scope,category_id:editingId,name:editingName.trim()},"Category renamed everywhere.");
+  const result=await mutate("category-rename",{scope,category_id:editingId,name:editingName.trim()},"Category renamed in "+workspaceLabel+".");
   if(result){setEditingId(null);setEditingName("");}
  }
  async function deleteCategory(cat){
   const affected=transactions.filter(t=>t.spend_category_id===cat.id).length;
   if(!confirm("Delete \""+cat.name+"\"? "+(affected?affected+" transaction(s) will return to Uncategorized. ":"")+"The bank transactions themselves will stay saved."))return;
-  const result=await mutate("category-delete",{scope,category_id:cat.id},"Category deleted; purchases remain available.");
+  const result=await mutate("category-delete",{scope,category_id:cat.id},"Category deleted from "+workspaceLabel+"; purchases remain available.");
   if(result&&categoryFilter===cat.id)setCategoryFilter("all");
  }
  async function assign(t,id){
@@ -258,7 +265,7 @@ export default function Banking({db,scope,buckets,onNotice}){
      </button>)}
     </div>
    </>:<>
-  <div className="spend-categories-head"><div><h2>Your categories</h2><p>Every purchase you've assigned counts here, including pending and excluded purchases.</p></div><button onClick={()=>setCategoryPanel(true)}><Plus size={15}/> Manage</button></div>
+  <div className="spend-categories-head"><div><h2>{workspaceLabel} categories</h2><p>Only categories for this workspace appear here. Assigned purchases include pending and excluded items.</p></div><button onClick={()=>setCategoryPanel(true)}><Plus size={15}/> Manage</button></div>
   <div className="spend-category-grid">
    {categoryCards.map((c,i)=><button key={c.id} className={"spend-category-card "+(categoryFilter===c.id?"selected":"")} onClick={()=>{setKind("spending");setCategoryFilter(x=>x===c.id?"all":c.id);}}>
      <span><span className="spend-category-dot" style={{background:["#e53935","#1e2635","#7c8595","#b58d4b","#ac5b65","#637e76"][i%6]}}/>{c.name}</span>
@@ -280,7 +287,7 @@ export default function Banking({db,scope,buckets,onNotice}){
     {displayed.map(t=><tr key={t.id} className={t.pending?"pending-row":""}>
      <td><div className="spend-merchant"><div className={"spend-sign "+(t.amount<0?"incoming":"")} >{t.amount<0?<ArrowDownLeft size={16}/>:<ArrowUpRight size={16}/>}</div><div><strong>{t.merchant_name||t.description}</strong><small>{t.pending?"Pending • ":""}{t.exclude_from_spending?"Excluded • ":""}{safeArray(t.tags).join(", ")|| (t.merchant_name?t.description:"Transaction")}</small></div></div></td>
      <td>{day(t.date)}</td>
-     <td>{t.amount>0?<><select className="spend-assign" aria-label={"Category for "+t.description} value={categoryById.has(t.spend_category_id)?t.spend_category_id:""} disabled={savingId!==null} onChange={e=>assign(t,e.target.value)}><option value="">Uncategorized</option>{categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>{savingId===t.id?<small className="spend-save-status">Saving…</small>:lastSavedId===t.id?<small className="spend-save-status confirmed"><Check size={12}/> Saved</small>:null}</>:<><select className="spend-assign" aria-label={"Money-in classification for "+t.description} value={t.inflow_type||""} disabled={savingId!==null} onChange={e=>assignInflow(t,e.target.value)}><option value="">Uncategorized</option>{INFLOW_TYPES.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}</select>{savingId===t.id?<small className="spend-save-status">Saving…</small>:lastSavedId===t.id?<small className="spend-save-status confirmed"><Check size={12}/> Saved</small>:null}</>}</td>
+     <td>{t.amount>0?<><select className="spend-assign" aria-label={workspaceLabel+" category for "+t.description} value={categoryById.has(t.spend_category_id)?t.spend_category_id:""} disabled={savingId!==null} onChange={e=>assign(t,e.target.value)}><option value="">Uncategorized</option>{categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select>{savingId===t.id?<small className="spend-save-status">Saving…</small>:lastSavedId===t.id?<small className="spend-save-status confirmed"><Check size={12}/> Saved</small>:null}</>:<><select className="spend-assign" aria-label={"Money-in classification for "+t.description} value={t.inflow_type||""} disabled={savingId!==null} onChange={e=>assignInflow(t,e.target.value)}><option value="">Uncategorized</option>{INFLOW_TYPES.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}</select>{savingId===t.id?<small className="spend-save-status">Saving…</small>:lastSavedId===t.id?<small className="spend-save-status confirmed"><Check size={12}/> Saved</small>:null}</>}</td>
      <td className="spend-account-cell">{accountByPlaidId.get(t.plaid_account_id)?.name||"Bank account"}</td>
      <td className={"right spend-money "+(t.amount<0?"credit":"")}>{t.amount<0?"+":"−"}{money(Math.abs(t.amount))}</td>
      <td><button aria-label={"Edit "+t.description} className="spend-more" onClick={()=>openDetails(t)}><MoreHorizontal size={18}/></button></td>
@@ -294,14 +301,14 @@ export default function Banking({db,scope,buckets,onNotice}){
    {items.length>0&&<button onClick={()=>setCategoryPanel("banks")}><Landmark size={15}/> Manage banks</button>}
   </div>
   {categoryPanel&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setCategoryPanel(false);}}><div className="modal-card spend-manage-modal">
-   <div className="modal-heading"><div><div className="eyebrow">SPENDING SETTINGS</div><h2>{categoryPanel==="banks"?"Connected banks":"Your categories"}</h2></div><button className="icon-btn" onClick={()=>setCategoryPanel(false)}><X size={20}/></button></div>
+   <div className="modal-heading"><div><div className="eyebrow">SPENDING SETTINGS</div><h2>{categoryPanel==="banks"?"Connected banks":workspaceLabel+" categories"}</h2></div><button className="icon-btn" onClick={()=>setCategoryPanel(false)}><X size={20}/></button></div>
    {categoryPanel==="banks"?<div className="spend-manage-body">
     <p className="spend-helper">Connected banks automatically supply transactions for this workspace.</p>
     {items.map(item=><div className="spend-category-manager-row" key={item.id}><div className="spend-manager-name"><Landmark size={17}/><strong>{item.institution_name}</strong><small title={item.last_sync_error_code||""}>{item.status==="error"?"Sync needs attention. Reconnect or retry.":item.last_synced_at?"Synced "+new Date(item.last_synced_at).toLocaleString():"Waiting to sync"}</small></div><button disabled={busy} onClick={()=>connect(item)}>Reconnect</button><button disabled={busy} className="danger" onClick={()=>disconnect(item)}><Link2Off size={15}/></button></div>)}
     <button className="primary full" disabled={busy} onClick={()=>{setCategoryPanel(false);connect();}}><Plus size={16}/> Connect another bank</button>
    </div>:<div className="spend-manage-body">
-    <p className="spend-helper">You decide what categories exist. Renaming a category updates all purchases. Deleting it moves those transactions to Uncategorized.</p>
-    <form className="spend-add-category" onSubmit={saveCategory}><input maxLength={40} aria-label="New category name" value={newCategory} onChange={e=>setNewCategory(e.target.value)} placeholder="New category name (e.g. Takeout)" required/><button className="primary" disabled={busy||!newCategory.trim()}><Plus size={16}/> Add</button></form>
+    <p className="spend-helper">Categories created or edited here apply only to {workspaceLabel}. Your {otherWorkspaceLabel} categories stay independent. Deleting a category moves its purchases in this workspace to Uncategorized.</p>
+    <form className="spend-add-category" onSubmit={saveCategory}><input maxLength={40} aria-label="New category name" value={newCategory} onChange={e=>setNewCategory(e.target.value)} placeholder={scope==="business"?"New category (e.g. Subscriptions, Developers)":"New category (e.g. Takeout, Groceries)"} required/><button className="primary" disabled={busy||!newCategory.trim()}><Plus size={16}/> Add</button></form>
     <div className="spend-category-manager">{categories.length?categories.map(cat=><div className="spend-category-manager-row" key={cat.id}>{editingId===cat.id?<form className="spend-rename" onSubmit={renameCategory}><input aria-label={"Rename "+cat.name} value={editingName} maxLength={40} autoFocus onChange={e=>setEditingName(e.target.value)}/><button type="submit" disabled={busy||!editingName.trim()}><Check size={17}/></button><button type="button" onClick={()=>setEditingId(null)}><X size={17}/></button></form>:<><div className="spend-manager-name"><strong>{cat.name}</strong><small>{transactions.filter(t=>t.spend_category_id===cat.id).length} assigned</small></div><button aria-label={"Rename "+cat.name} disabled={busy} onClick={()=>{setEditingId(cat.id);setEditingName(cat.name);}}><Pencil size={16}/></button><button aria-label={"Delete "+cat.name} className="danger" disabled={busy} onClick={()=>deleteCategory(cat)}><Trash2 size={16}/></button></>}</div>):<div className="spend-empty-categories">No preset categories. Add your own above.</div>}</div>
    </div>}
   </div></div>}
