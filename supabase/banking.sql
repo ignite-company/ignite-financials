@@ -13,6 +13,8 @@ create table if not exists public.finance_bank_items (
  sync_cursor text,
  status text not null default 'active' check(status in ('active','error')),
  last_synced_at timestamptz,
+ last_sync_attempt_at timestamptz,
+ last_sync_error_code text,
  created_at timestamptz not null default now()
 );
 create index if not exists finance_bank_items_owner_idx on public.finance_bank_items(user_id,scope);
@@ -48,10 +50,12 @@ create table if not exists public.finance_bank_transactions (
  bucket_id uuid references public.finance_buckets(id) on delete set null,
  pending boolean not null default false,
  is_removed boolean not null default false,
+ first_seen_at timestamptz not null default now(),
  updated_at timestamptz not null default now()
 );
 create index if not exists finance_bank_transactions_owner_date_idx on public.finance_bank_transactions(user_id,scope,date desc);
 create index if not exists finance_bank_transactions_item_idx on public.finance_bank_transactions(bank_item_id);
+create index if not exists finance_bank_transactions_stable_order_idx on public.finance_bank_transactions(user_id,date desc,first_seen_at desc,id) where is_removed=false;
 alter table public.finance_bank_items enable row level security;
 alter table public.finance_bank_accounts enable row level security;
 alter table public.finance_bank_transactions enable row level security;

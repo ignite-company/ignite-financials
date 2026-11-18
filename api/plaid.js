@@ -8,14 +8,14 @@ export default async function handler(req,res){
   const db=serverDb(),body=req.body||{},action=body.action;
   if(action==="status"){
    const [i,a,c]=await Promise.all([
-    db.from("finance_bank_items").select("id,scope,institution_name,institution_id,status,last_synced_at,created_at").eq("user_id",user.id).order("created_at",{ascending:false}),
+    db.from("finance_bank_items").select("id,scope,institution_name,institution_id,status,last_synced_at,last_sync_attempt_at,last_sync_error_code,created_at").eq("user_id",user.id).order("created_at",{ascending:false}),
     db.from("finance_bank_accounts").select("id,bank_item_id,plaid_account_id,scope,name,mask,type,subtype").eq("user_id",user.id),
     db.from("finance_spend_categories").select("id,scope,name").eq("user_id",user.id).order("created_at",{ascending:true})
    ]);
    if(i.error||a.error||c.error)throw i.error||a.error||c.error;
    let transactions=[];
    for(let offset=0;offset<6000;offset+=1000){
-    const r=await db.from("finance_bank_transactions").select("id,bank_item_id,plaid_account_id,scope,date,description,merchant_name,amount,category_primary,category_detailed,category_override,spend_category_id,inflow_type,exclude_from_spending,tags,bucket_id,pending,is_removed").eq("user_id",user.id).eq("is_removed",false).order("date",{ascending:false}).range(offset,offset+999);
+    const r=await db.from("finance_bank_transactions").select("id,bank_item_id,plaid_account_id,scope,date,first_seen_at,description,merchant_name,amount,category_primary,category_detailed,category_override,spend_category_id,inflow_type,exclude_from_spending,tags,bucket_id,pending,is_removed").eq("user_id",user.id).eq("is_removed",false).order("date",{ascending:false}).order("first_seen_at",{ascending:false}).order("id",{ascending:true}).range(offset,offset+999);
     if(r.error)throw r.error;
     transactions.push(...r.data);
     if(r.data.length<1000)break;

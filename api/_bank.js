@@ -63,7 +63,8 @@ export const cleanBankTransaction=(t,item)=>{
   category_detailed:cat.detailed||null,
   pending:!!t.pending,
   is_removed:false,
-  updated_at:new Date().toISOString()
+  updated_at:new Date().toISOString(),
+  first_seen_at:new Date().toISOString()
  };
 };
 export async function syncItem(db,item){
@@ -98,7 +99,7 @@ export async function syncItem(db,item){
    const source=group.slice(i,i+150).filter(t=>t.transaction_id&&t.date);
    const ids=payload.map(t=>t.plaid_transaction_id);
    const pendingIds=[...new Set(source.filter(t=>!t.pending&&t.pending_transaction_id).map(t=>t.pending_transaction_id))];
-   const userColumns="plaid_transaction_id,category_override,spend_category_id,inflow_type,exclude_from_spending,tags,bucket_id";
+   const userColumns="plaid_transaction_id,category_override,spend_category_id,inflow_type,exclude_from_spending,tags,bucket_id,first_seen_at";
    const {data:existing,error:lookupError}=await db.from("finance_bank_transactions")
     .select(userColumns).eq("user_id",item.user_id).in("plaid_transaction_id",ids);
    if(lookupError)throw lookupError;
@@ -116,7 +117,7 @@ export async function syncItem(db,item){
     const prior=saved.get(t.plaid_transaction_id)||
      (fresh?.pending_transaction_id?savedPending.get(fresh.pending_transaction_id):null);
     if(!prior)return t;
-    return {...t,category_override:prior.category_override,
+    return {...t,first_seen_at:prior.first_seen_at,category_override:prior.category_override,
      spend_category_id:prior.spend_category_id,
      inflow_type:prior.inflow_type,
      exclude_from_spending:!!prior.exclude_from_spending,
@@ -140,7 +141,11 @@ export async function syncItem(db,item){
   const {error}=await db.from("finance_bank_transactions").update({is_removed:true,updated_at:new Date().toISOString()}).eq("bank_item_id",item.id).in("plaid_transaction_id",ids);
   if(error)throw error;
  }
- const {error}=await db.from("finance_bank_items").update({sync_cursor:endCursor,status:"active",last_synced_at:new Date().toISOString()}).eq("id",item.id).eq("user_id",item.user_id);
+ const syncedAt=new Date().toISOString();
+ const {error}=await db.from("finance_bank_items").update({
+  sync_cursor:endCursor,status:"active",last_synced_at:syncedAt,
+  last_sync_attempt_at:syncedAt,last_sync_error_code:null
+ }).eq("id",item.id).eq("user_id",item.user_id);
  if(error)throw error;
  return {added:added.length,modified:modified.length,removed:removed.length};
 }
@@ -154,7 +159,11 @@ export async function syncOwnedItems(db,userId,scope=null){
   try{const detail=await syncItem(db,item);results.push({id:item.id,ok:true,...detail});}
   catch(err){
    results.push({id:item.id,ok:false,error:err.plaid_code||err.message});
-   await db.from("finance_bank_items").update({status:"error"}).eq("id",item.id).eq("user_id",userId);
+   const {error:recordError}=await db.from("finance_bank_items").update({
+    status:"error",last_sync_attempt_at:new Date().toISOString(),
+    last_sync_error_code:String(err.plaid_code||"SYNC_FAILED").slice(0,100)
+   }).eq("id",item.id).eq("user_id",userId);
+   if(recordError)console.error("Could not record failed bank sync:",recordError.message);
   }
  }
  return results;

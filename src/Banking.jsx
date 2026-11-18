@@ -1,5 +1,6 @@
 import React, {useEffect,useMemo,useRef,useState} from "react";
 import { summarizeSpending } from "./spendingMath.js";
+import { compareBankTransactions } from "./bankTransactionOrder.js";
 import { INFLOW_TYPES,INFLOW_UNCLASSIFIED,summarizeInflows } from "./inflowMath.js";
 import {ArrowDownLeft,ArrowUpRight,Building2,Check,ChevronLeft,ChevronRight,CircleHelp,FolderPlus,Landmark,Link2Off,LockKeyhole,MoreHorizontal,Pencil,Plus,ReceiptText,RefreshCw,Search,Settings2,Tag,Trash2,X} from "lucide-react";
 
@@ -33,14 +34,33 @@ export default function Banking({db,scope,buckets,onNotice}){
   if(!res.ok)throw new Error(json.error||"Unable to update banking data.");
   return json;
  };
- const load=async(silent=false)=>{
+ const load=async(silent=false,catchUp=false)=>{
   const req=++inflight.current;
   if(!silent)setLoading(true);
-  try{const result=await api("status");if(req===inflight.current)setState(result);}
-  catch(e){if(req===inflight.current)onNotice(e.message);}
+  try{
+   const result=await api("status");
+   if(req!==inflight.current)return;
+   setState(result);
+   setLoading(false);
+   // The daily Vercel cron is primary. Also refresh stale bank connections
+   // on first visit so an unavailable cron does not leave yesterday's data.
+   const needsRefresh=catchUp&&result.configured&&safeArray(result.items).some(item=>{
+    const lastAttempt=Date.parse(item.last_sync_attempt_at||"");
+    return !Number.isFinite(lastAttempt)||Date.now()-lastAttempt>=24*60*60*1000;
+   });
+   if(needsRefresh){
+    try{
+     await api("sync");
+     const refreshed=await api("status");
+     if(req===inflight.current)setState(refreshed);
+    }catch(e){
+     if(req===inflight.current)onNotice("Automatic bank refresh failed: "+e.message);
+    }
+   }
+  }catch(e){if(req===inflight.current)onNotice(e.message);}
   finally{if(req===inflight.current)setLoading(false);}
  };
- useEffect(()=>{load();return()=>{inflight.current++;}},[]);
+ useEffect(()=>{load(false,true);return()=>{inflight.current++;}},[]);
  useEffect(()=>{setAccount("all");setKind("spending");setCategoryFilter("all");setMonth(currentMonth());},[scope]);
  const items=safeArray(state.items).filter(i=>i.scope===scope);
  const accounts=safeArray(state.accounts).filter(a=>a.scope===scope);
@@ -68,7 +88,7 @@ export default function Banking({db,scope,buckets,onNotice}){
    }
   }
   return [t.description,t.merchant_name,accountByPlaidId.get(t.plaid_account_id)?.name,...safeArray(t.tags)].some(x=>String(x||"").toLowerCase().includes(search.toLowerCase()));
- }).sort((a,b)=>b.date.localeCompare(a.date));
+ }).sort(compareBankTransactions);
  const totalDeposits=monthAccountTransactions.filter(t=>Number(t.amount)<0&&!t.pending&&!t.exclude_from_spending).reduce((n,t)=>n+Math.abs(Number(t.amount)),0);
  const allDates=transactions.length;
  async function mutate(action,args={},message){
@@ -152,7 +172,12 @@ export default function Banking({db,scope,buckets,onNotice}){
  }
  async function sync(){
   if(!items.length)return;
-  await mutate("sync",{scope},"Bank sync requested. New bank transactions can take time to become available.");
+  const result=await mutate("sync",{scope});
+  if(!result)return;
+  const failed=safeArray(result.results).filter(r=>!r.ok).length;
+  onNotice(failed
+   ?failed+" bank connection(s) could not sync. Open Manage banks to reconnect or retry."
+   :"Bank sync completed. New transactions may still take time to appear at the bank.");
  }
  async function disconnect(item){
   if(!confirm("Disconnect "+item.institution_name+"? Imported transactions from this bank will be deleted. Your custom category names will remain."))return;
@@ -265,14 +290,14 @@ export default function Banking({db,scope,buckets,onNotice}){
   </section>
   <p className="spend-math-note">{kind==="income"?"Money-in classifications are labels only. Transfers and refunds do not count as revenue, and classified credits do not automatically create ledger income or allocations.":"Category cards show all categorized purchases. The monthly spending total excludes items you've marked as transfers or duplicates. Use the three-dot menu on a transaction to change its exclusion."}</p>
   <div className="spend-connected-bar">
-   <span><LockKeyhole size={14}/>{accountsLabel} · Read-only · No money moves</span>
+   <span><LockKeyhole size={14}/>{accountsLabel} · Read-only · Daily sync{items.some(i=>i.status==="error")?" · "+items.filter(i=>i.status==="error").length+" need attention":""}</span>
    {items.length>0&&<button onClick={()=>setCategoryPanel("banks")}><Landmark size={15}/> Manage banks</button>}
   </div>
   {categoryPanel&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setCategoryPanel(false);}}><div className="modal-card spend-manage-modal">
    <div className="modal-heading"><div><div className="eyebrow">SPENDING SETTINGS</div><h2>{categoryPanel==="banks"?"Connected banks":"Your categories"}</h2></div><button className="icon-btn" onClick={()=>setCategoryPanel(false)}><X size={20}/></button></div>
    {categoryPanel==="banks"?<div className="spend-manage-body">
     <p className="spend-helper">Connected banks automatically supply transactions for this workspace.</p>
-    {items.map(item=><div className="spend-category-manager-row" key={item.id}><div className="spend-manager-name"><Landmark size={17}/><strong>{item.institution_name}</strong><small>{item.last_synced_at?"Synced "+new Date(item.last_synced_at).toLocaleDateString():"Waiting to sync"}</small></div><button disabled={busy} onClick={()=>connect(item)}>Reconnect</button><button disabled={busy} className="danger" onClick={()=>disconnect(item)}><Link2Off size={15}/></button></div>)}
+    {items.map(item=><div className="spend-category-manager-row" key={item.id}><div className="spend-manager-name"><Landmark size={17}/><strong>{item.institution_name}</strong><small title={item.last_sync_error_code||""}>{item.status==="error"?"Sync needs attention. Reconnect or retry.":item.last_synced_at?"Synced "+new Date(item.last_synced_at).toLocaleString():"Waiting to sync"}</small></div><button disabled={busy} onClick={()=>connect(item)}>Reconnect</button><button disabled={busy} className="danger" onClick={()=>disconnect(item)}><Link2Off size={15}/></button></div>)}
     <button className="primary full" disabled={busy} onClick={()=>{setCategoryPanel(false);connect();}}><Plus size={16}/> Connect another bank</button>
    </div>:<div className="spend-manage-body">
     <p className="spend-helper">You decide what categories exist. Renaming a category updates all purchases. Deleting it moves those transactions to Uncategorized.</p>
